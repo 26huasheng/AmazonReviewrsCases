@@ -1,189 +1,94 @@
 # case_build
 
-这一目录负责把已经确认的 `Final Market` 转成一批真实新品进入事件的候选 Case，并在需要时给指定 Case 物化 `t0` 货架。
-
-核心链条：
+这一目录负责从 Final Market 生成完整的 Case 构建链。它已经不只包含商品侧，现在分成四段：
 
 ```text
-final_market.parquet
-        ↓
-Market 商品展开
-        ↓
-商品首评 / 末评时间轴
-        ↓
-每个商品作为一次候选新品进入事件
-        ↓
-case_candidates.parquet
-        ↓
-结构完整的候选
-case_candidates_evaluable.parquet
-        ↓
-先筛出准备继续处理的 Case
-        ↓
-显式调用 shelf 阶段
-        ↓
-case_shelf.parquet
+Final Market
+    ↓
+1. Case Discovery
+    ↓
+2. t0 Shelf
+    ↓
+3. Case Population
+    ↓
+4. Ground Truth
+    ↓
+5. Quality Gate
 ```
 
-这一版主要迁自 `AmazonReviewrepo@v5` 的：
+最终 accepted cases 再交给根目录的 `benchmark_split/` 和 `benchmark_export/`。
 
-```text
-data_prep/product_time_summary.py
-temporal_segmentation/attach_market_ids.py
-temporal_segmentation/competitor_count_at_entry.py
-temporal_segmentation/focal_prefilter.py
-temporal_segmentation/assign_segments.py
-focal_selection/focal_features.py
-competitor_selection/build_wide_pool.py
-competitor_selection/activity_features.py
-```
-
-保留的是已经验证过的时间计算、Market many-to-one 汇总、累计统计和 ASOF 查询；旧的 focal top-1、未来评论量硬阈值、固定 competitor 数、150 截断、8 CORE + 8 RESERVE 都没有带进来。
+---
 
 ## 1. Case Discovery
 
-运行：
-
-```bash
-python -m case_build.cli discover \
-  --final-market outputs/market_discovery/market_v1/final_market.parquet \
-  --product-core /path/to/product_core.parquet \
-  --product-time-summary /path/to/product_time_summary.parquet \
-  --rating-daily-summary /path/to/rating_daily_summary.parquet \
-  --storage-metadata /path/to/storage_metadata.json \
-  --output-dir outputs/case_build/discovery
-```
-
-`product_time_summary.parquet` 与 v5 接口兼容。已有文件时直接复用；如果没有，也可以只提供：
-
-```bash
---rating-daily-summary /path/to/rating_daily_summary.parquet
-```
-
-代码会从逐日表重新生成商品首评/末评汇总。
-
-如果同时提供 `rating_daily_summary`，还会按 v5 已验证的 many-to-one 方式先把商品日评论汇总到 Market，再做累计，从而得到每个 Case 的：
+主要代码：
 
 ```text
-market_pre_t0_review_count
+product_timeline.py
+market_timeline.py
+case_discovery.py
+time_windows.py
+case_features.py
+pipeline.py
+cli.py
 ```
 
-这一步不会构造 `focal × market products` 网格。
+主要迁自 `AmazonReviewrepo@v5` 的商品时间、temporal segmentation 和 focal feature 计算。
 
-### 输出
+保留：
+
+- `t0 = first_rating_date`；
+- Market 商品时间轴；
+- active competitor 区间累计；
+- `market_pre_t0_review_count` 的 many-to-one + ASOF 计算；
+- 既有 `product_time_summary.parquet` 接口。
+
+删除 / 后移：
+
+- 一个时间段只取 top-1 focal；
+- `post90>=50` 等旧 hard gate；
+- competitor 数旧 hard gate。
+
+一个 Market 中每个结构完整的新品进入事件都先形成 candidate case。
+
+输出：
 
 ```text
-<output-dir>/
-├── market_product_map.parquet
-├── market_product_timeline.parquet
-├── case_candidates.parquet
-├── case_candidates_evaluable.parquet
-├── case_discovery_summary.json
-└── _work/
-    ├── product_time_summary.parquet        # 仅在没有外部输入时生成
-    ├── active_product_interval_events.parquet
-    ├── active_product_count_cumulative.parquet
-    ├── market_daily_review_count.parquet  # 有 rating_daily 时生成
-    ├── market_review_cumulative.parquet   # 有 rating_daily 时生成
-    ├── case_candidates_without_boxes.parquet
-    └── case_candidates_with_boxes.parquet
+market_product_map.parquet
+market_product_timeline.parquet
+case_candidates.parquet
+case_candidates_evaluable.parquet
 ```
 
-### `market_product_timeline.parquet`
-
-一行一个 `Market × product`，主要字段：
+`case_candidates_evaluable` 这里只要求：
 
 ```text
-source_partition
-market_id
-market_label
-product_id
-product_title
-first_rating_date
-last_rating_date
-post90_rating_count
-entry_date = first_rating_date
-entry_date_source = first_rating_date
-```
-
-### `case_candidates.parquet`
-
-Market 中每个商品先形成一个候选新品进入事件：
-
-```text
-case_candidate_id
-market_id
-focal_product_id
-t0
-evaluation_start
-evaluation_end_exclusive
-evaluation_days
-post90_rating_count
-active_competitor_count_at_t0
-market_pre_t0_review_count
 valid_t0
 evaluation_window_complete
-time_box_id
 ```
 
-其中：
+---
+
+## 2. t0 Shelf
+
+主要代码：
 
 ```text
-post90_rating_count
-active_competitor_count_at_t0
-market_pre_t0_review_count
+shelf.py
+CaseShelfBuilder
 ```
 
-都只是质量统计字段，不会提前淘汰 Case。
-
-`case_candidates_evaluable.parquet` 只做两项结构性筛选：
+一个 competitor 进入 Case shelf 需要：
 
 ```text
-valid_t0 = true
-evaluation_window_complete = true
-```
-
-这不等于最终 accepted case，后面仍要结合用户、GT 和外部质量信号做 Quality Gate。
-
-## 2. t0 货架
-
-Shelf 阶段单独运行：
-
-```bash
-python -m case_build.cli shelf \
-  --cases /path/to/cases_to_materialize.parquet \
-  --market-timeline outputs/case_build/discovery/market_product_timeline.parquet \
-  --rating-daily-summary /path/to/rating_daily_summary.parquet \
-  --output-dir outputs/case_build/shelf
-```
-
-`--cases` 必须显式传入。这里没有默认把全部候选 Case 一次性展开成 `case × market products`，因为大 Market 上这样会产生非常大的中间表。正式大规模运行时应先筛出准备继续处理的 Case，再物化 shelf。
-
-### 货架资格
-
-一个同 Market 商品成为某 Case 的 competitor，需要：
-
-```text
-product_id != focal_product_id
+同一 Market
+product_id != focal
 first_rating_date < t0
 last_rating_date >= t0
 ```
 
-因此：
-
-- 和 focal 同日首评的商品不算已有 competitor；
-- `last_rating_date == t0` 的商品仍算 t0 当日活跃；
-- 一个较早 Case 的 focal 可以在后续 Case 中自然成为 competitor。
-
-### 商品历史特征
-
-代码一次性生成：
-
-```text
-product_rating_cumulative.parquet
-```
-
-之后所有 Case 都通过 ASOF 查询得到：
+保留 v5 已验证的商品累计表 + ASOF 查询，计算：
 
 ```text
 pre_t0_review_count
@@ -191,73 +96,148 @@ pre_t0_rating_mean
 pre_t0_recent_review_count
 ```
 
-默认最近窗口为 `[t0-120天, t0)`，起点当天计入，t0 当天不计入。
-
-当前没有：
+当前不做：
 
 ```text
-最近120天 >= 10条 的硬门槛
-150 个 competitor 截断
-CORE / RESERVE 角色
-固定 8 个 competitor
+Top-150
+最近120天>=10硬筛
+8 CORE + 8 RESERVE
+固定 competitor 数
 ```
 
-### 价格
+Amazon metadata snapshot price 只保留成 `metadata_snapshot_price`，不会冒充历史 `price_at_t0`。
 
-`product_core.snapshot_price` 会保留为：
+---
+
+## 3. Case Population
+
+目录：[`population/`](population/README.md)
 
 ```text
-metadata_snapshot_price
+Market shared population
++ Case t0
++ 用户累计历史
+        ↓
+case_user_features
+        ↓
+threshold scan
+        ↓
+eligibility
+        ↓
+case_users
 ```
 
-它不能冒充历史 `t0` 价格，因此当前：
+所有用户资格字段只来自 `t0` 以前；未来正例不能参与用户筛选。
+
+核心输出：
 
 ```text
-price_at_t0 = NULL
-price_source = NULL
+case_user_features.parquet
+population_threshold_scan.parquet
+case_user_eligibility.parquet
+case_users.parquet
 ```
 
-等 Keepa 历史价格接入后再填。
+---
 
-## 3. 时间段
+## 4. Ground Truth
 
-默认时间段沿用此前确定的口径：
+目录：[`ground_truth/`](ground_truth/README.md)
 
-- 2021 年以前按两年一段；
-- 2021、2022、2023 按半年一段。
-
-时间段现在只是 Case 的 `time_box_id` 属性，不再生成 `Market Segment` 这一层。
-
-所有区间使用半开区间：
+Case 用户锁定之后才查询 future：
 
 ```text
-[start_date, end_date)
+future_market_events
+        ↓
+GT2: all case users -> product / none
+        ↓
+GT1: GT2 positives -> product
+        ↓
+market demand / share / rank
 ```
 
-因此 `2023-H2` 写成：
+核心输出：
 
 ```text
-2023-07-01 <= t0 < 2024-01-01
+choice_truth.parquet
+population_truth.parquet
+market_truth.parquet
 ```
 
-## 4. 当前边界
-
-这一目录只完成商品侧的 Case 骨架：
+可选：
 
 ```text
-Market
-+
-focal
-+
-t0
-+
-evaluation window
-+
-t0 shelf
-+
-pre-t0 商品统计
+review_activity_truth.parquet
 ```
 
-用户 population、Case 用户筛选、GT1 / GT2、最终 Quality Gate 和 benchmark split 在后续模块完成。
+它直接对完整 shelf 的未来评论量排名，作为辅助商品侧真值 / 质量信号。
 
-未定事项见 [`TODO.md`](TODO.md)。
+---
+
+## 5. Quality Gate
+
+目录：[`quality/`](quality/README.md)
+
+把：
+
+```text
+商品侧
+用户侧
+GT1 / GT2
+辅助 review ranking
+外部 Keepa / BSR signals（可选）
+```
+
+汇总后输出：
+
+```text
+quality_metrics.parquet
+quality_decisions.parquet
+accepted_cases.parquet
+rejected_cases.parquet
+```
+
+结构性完整性会直接检查；研究阈值全部由 JSON 配置，不把 v5 的旧数字写死。
+
+---
+
+## 6. 时间段
+
+时间段仍使用：
+
+- 2021 年以前按两年；
+- 2021-2023 按半年。
+
+它现在只是 Case 的 `time_box_id` 属性，不再产生 `Market Segment` 层级。
+
+所有时间窗口使用半开区间 `[start, end)`。
+
+---
+
+## 7. 当前完整接口
+
+```text
+market_discovery/final_market.parquet
+        ↓
+case_build discover
+        ↓
+case_candidates_evaluable.parquet
+        ↓
+case_build shelf
+        ↓
+case_shelf.parquet
+        ↓
+case_build.population
+        ↓
+case_users.parquet
+        ↓
+case_build.ground_truth
+        ↓
+GT1 / GT2 / market truth
+        ↓
+case_build.quality
+        ↓
+accepted_cases.parquet
+```
+
+商品侧仍未冻结的规则见 [`TODO.md`](TODO.md)；用户、GT、Quality 各自的研究 TODO 放在对应子目录里。
