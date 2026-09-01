@@ -117,7 +117,7 @@ Cross-path merge **不调用 LLM**，也不做：
 
 ## 4. 运行
 
-从仓库根目录运行：
+从仓库根目录运行完整 Discovery：
 
 ```bash
 python -m market_discovery.cli \
@@ -136,6 +136,32 @@ LLM_BASE_URL
 
 也可以通过 fixture 做离线测试。
 
+### 已经有 `first_market.csv` 时只跑合并
+
+已有 v5 / 旧 Discovery 结果时，不需要为了新的 cross-path 规则重新调用 LLM。直接运行：
+
+```bash
+python -m market_discovery.merge_cli \
+  --discovery-dir /path/to/existing/discovery/version_dir
+```
+
+该命令只读取：
+
+```text
+first_market.csv
+```
+
+并生成新的：
+
+```text
+final_market.csv
+final_market.parquet
+cross_path_exact_merge_audit.json
+cross_path_exact_merge_summary.json
+```
+
+整个 merge-only 流程不会调用 LLM。
+
 依赖见仓库根目录 `requirements.txt`。
 
 ## 5. 与 v5 的主要修改
@@ -147,6 +173,7 @@ LLM_BASE_URL
 - Cross-path 不再使用原 v5 的 semantic LLM merge；
 - 合并范围固定为名称相同或纯格式差异；
 - 增加 `final_market.parquet/csv` 和合并审计；
+- 增加 merge-only CLI，允许复用已有 Discovery 输出；
 - 增加对应单元测试。
 
 剩余边角项见 [`TODO_CROSS_PATH.md`](TODO_CROSS_PATH.md)。
