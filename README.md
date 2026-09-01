@@ -28,10 +28,11 @@ Amazon Reviews 2023
         │                │
         ▼                ▼
 population_scan     market_discovery
-大类用户基础扫描      local market 发现
+大类用户基础扫描      path-local market 发现
         │                │
         │                ▼
-        │           cross-path merge
+        │       exact normalized-name merge
+        │          （cross-path，不调用 LLM）
         │                │
         └────────┬───────┘
                  ▼
@@ -87,6 +88,34 @@ market_smart_watch/
 ```
 
 多个 Case 可以拥有不同的 focal、`t0`、货架和用户子集，同时复用 Market 层的商品与人口基础资产。
+
+### 2.1 Market Discovery
+
+`market_discovery/` 已经从 `AmazonReviewrepo@v5` 迁入完整 path-local discovery 主流程，并在末尾直接生成 `final_market.parquet/csv`。
+
+Cross-path 合并采用固定窄规则：
+
+```text
+同一 source_partition
++ market_label 规范化后完全相等
+→ 合并
+```
+
+例如：
+
+```text
+Phone_Case
+phone-case
+phone case
+```
+
+统一为：
+
+```text
+phone_case
+```
+
+Cross-path 阶段不调用 LLM，不做 synonym / embedding / semantic clustering。详细规则见 [`market_discovery/README.md`](market_discovery/README.md)。
 
 ## 3. Case
 
@@ -200,13 +229,15 @@ split 文件只记录 Market / Case ID，不复制 Case 数据。
 AmazonReviewrsCases/
 ├── README.md
 ├── SCHEMA.md
+├── requirements.txt
 ├── paths.py
 ├── utils.py
 │
-├── population_scan/              # 已有：大类人口基础扫描
-├── market_discovery/             # 已有：local market discovery
+├── population_scan/              # 已有定义：大类人口基础扫描
+├── market_discovery/             # 已有代码：local discovery + exact cross-path merge
+├── tests/                        # 已开始迁移 / 新增 discovery tests
 │
-├── market_build/                 # 计划：final market 与共享 population
+├── market_build/                 # 计划：共享 population 与 Market 资产组织
 ├── case_build/                   # 计划：case discovery / users / GT / quality gate
 └── benchmark_split/              # 计划：learning / validation / evaluation split
 ```
