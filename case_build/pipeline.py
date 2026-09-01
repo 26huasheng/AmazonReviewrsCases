@@ -12,6 +12,10 @@ from .case_discovery import (
     write_active_product_count_events,
     write_case_candidates,
 )
+from .case_features import (
+    attach_market_pre_t0_review_count,
+    write_market_review_cumulative,
+)
 from .config import DEFAULT_EVALUATION_DAYS, DEFAULT_RECENT_ACTIVITY_WINDOW_DAYS
 from .market_timeline import write_market_product_map_and_timeline
 from .product_timeline import (
@@ -114,7 +118,10 @@ class CaseDiscoveryPipeline(_DuckDBStage):
         self.market_timeline_path = self.output_dir / "market_product_timeline.parquet"
         self.interval_events_path = self.work_dir / "active_product_interval_events.parquet"
         self.active_count_path = self.work_dir / "active_product_count_cumulative.parquet"
+        self.market_daily_path = self.work_dir / "market_daily_review_count.parquet"
+        self.market_cumulative_path = self.work_dir / "market_review_cumulative.parquet"
         self.candidates_without_boxes_path = self.work_dir / "case_candidates_without_boxes.parquet"
+        self.candidates_with_boxes_path = self.work_dir / "case_candidates_with_boxes.parquet"
         self.candidates_path = self.output_dir / "case_candidates.parquet"
         self.evaluable_path = self.output_dir / "case_candidates_evaluable.parquet"
         self.summary_path = self.output_dir / "case_discovery_summary.json"
@@ -179,10 +186,35 @@ class CaseDiscoveryPipeline(_DuckDBStage):
         outside_time_box_count = attach_time_boxes(
             self.con,
             self.candidates_without_boxes_path,
-            self.candidates_path,
+            self.candidates_with_boxes_path,
             self.time_boxes,
             self._copy_atomic,
         )
+
+        if self.rating_daily_summary is not None:
+            write_market_review_cumulative(
+                self.con,
+                self.market_product_map_path,
+                self.rating_daily_summary,
+                self.market_daily_path,
+                self.market_cumulative_path,
+                self._copy_atomic,
+            )
+            attach_market_pre_t0_review_count(
+                self.con,
+                self.candidates_with_boxes_path,
+                self.market_cumulative_path,
+                self.candidates_path,
+                self._copy_atomic,
+            )
+            market_pre_t0_status = "COMPUTED"
+        else:
+            self._copy_atomic(f"""
+                SELECT *, NULL::BIGINT AS market_pre_t0_review_count
+                FROM read_parquet({sql_literal(str(self.candidates_with_boxes_path))})
+            """, self.candidates_path)
+            market_pre_t0_status = "UNAVAILABLE_WITHOUT_RATING_DAILY"
+
         self._copy_atomic(f"""
             SELECT *
             FROM read_parquet({sql_literal(str(self.candidates_path))})
@@ -212,6 +244,7 @@ class CaseDiscoveryPipeline(_DuckDBStage):
             "active_interval_event_rows": interval_rows,
             "evaluation_days": self.evaluation_days,
             "entry_date_source": "first_rating_date",
+            "market_pre_t0_review_count_status": market_pre_t0_status,
             "time_boxes": time_boxes_identity(self.time_boxes),
             "hard_quality_gates_applied": False,
         }
@@ -286,10 +319,17 @@ class CaseShelfBuilder(_DuckDBStage):
             recent_window_days=self.recent_window_days,
         )
 
+        input_case_count = int(self.con.execute(
+            "SELECT count(*) FROM read_parquet(?)", [str(self.cases_path)]
+        ).fetchone()[0])
         case_count = int(self.con.execute(
             "SELECT count(DISTINCT case_candidate_id) FROM read_parquet(?)",
             [str(self.shelf_path)],
         ).fetchone()[0])
+        if case_count != input_case_count:
+            raise ValueError(
+                f"shelf materialized {case_count} cases, expected {input_case_count}"
+            )
         shelf_row_count = int(self.con.execute(
             "SELECT count(*) FROM read_parquet(?)", [str(self.shelf_path)]
         ).fetchone()[0])
