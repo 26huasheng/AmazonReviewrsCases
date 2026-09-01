@@ -108,6 +108,7 @@ def test_discovery_keeps_multiple_focals_and_only_structural_gate(tmp_path: Path
     assert summary["candidate_case_count"] == 4
     assert summary["evaluable_case_count"] == 4
     assert summary["hard_quality_gates_applied"] is False
+    assert summary["market_pre_t0_review_count_status"] == "COMPUTED"
 
     con = duckdb.connect()
     try:
@@ -119,7 +120,8 @@ def test_discovery_keeps_multiple_focals_and_only_structural_gate(tmp_path: Path
                        post90_rating_count,
                        active_competitor_count_at_t0,
                        time_box_id,
-                       evaluation_window_complete
+                       evaluation_window_complete,
+                       market_pre_t0_review_count
                 FROM read_parquet(?)
             """, [str(paths["out"] / "case_candidates.parquet")]).fetchall()
         }
@@ -142,6 +144,8 @@ def test_discovery_keeps_multiple_focals_and_only_structural_gate(tmp_path: Path
     assert rows["C"][3] == "2022-H1"
     # [2023-10-03, 2024-01-01) 需要的数据最后一天是 2023-12-31，窗口完整。
     assert rows["D"][4] is True
+    # C t0 以前整个 Market 的评论量为 A 的 5 + B 的 10；t0 当天不计入。
+    assert rows["C"][5] == 15
     # 时间段只是 Case 属性，不再制造 market_segment 层。
     assert "market_segment_id" not in columns
 
@@ -179,3 +183,4 @@ def test_discovery_accepts_existing_v5_product_time_summary(tmp_path: Path) -> N
 
     assert summary["product_time_source"] == "provided"
     assert summary["candidate_case_count"] == 4
+    assert summary["market_pre_t0_review_count_status"] == "UNAVAILABLE_WITHOUT_RATING_DAILY"
