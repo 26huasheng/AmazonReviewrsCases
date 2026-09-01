@@ -1,10 +1,10 @@
 # AmazonReviewrsCases
 
-Amazon Reviews 2023 上的 SEMS benchmark 数据构造仓库。
+Amazon Reviews 2023 上的 SEMS benchmark 构造与评测仓库。
 
-本仓现在已经按 **Market → Cases** 的新设计拆成完整数据链，负责从 Amazon Reviews 基础数据一路构造到最终 benchmark 目录；模拟器本体仍在其它仓库。
+核心层级固定为 **Market → Cases**。本仓负责从 Amazon Reviews / `AmazonReviewrepo@v5` 已有基础表继续构造 Market、Case、用户、GT、质量筛选、split、最终 benchmark 文件以及数值评测入口；模拟器本体不放在这里。
 
-最终 schema 见 [`SCHEMA.md`](SCHEMA.md)，全局尚未冻结的研究口径见 [`TODO.md`](TODO.md)。
+最终数据格式见 [`SCHEMA.md`](SCHEMA.md)，所有尚未冻结的研究口径总表见 [`TODO.md`](TODO.md)。
 
 ---
 
@@ -12,7 +12,6 @@ Amazon Reviews 2023 上的 SEMS benchmark 数据构造仓库。
 
 ```text
 MARKET
-├── Market definition
 ├── 长期商品 universe
 ├── shared population
 ├── shared user history
@@ -30,19 +29,16 @@ MARKET
                          demand / share / rank
 ```
 
-Market 是相对稳定的竞争空间；Case 是一个具体新品在某个时间点进入该 Market 的真实历史事件。
-
-一个 Market 可以有很多 Case，不再把 `focal + 几个 competitor` 当成 Market 本身。
+一个 Market 可以包含多个不同时间的新品进入 Case。Case 共享 Market 级商品和人口资产，不重复保存完整用户历史。
 
 ---
 
-# 2. 完整数据流程
+# 2. 完整流程
 
 ```text
 Amazon Reviews / v5 upstream data
         │
         ├──────────────────────────────┐
-        │                              │
         ▼                              ▼
 population_scan                  market_discovery
 大类用户基础扫描                   path-local Market 发现
@@ -50,7 +46,6 @@ population_scan                  market_discovery
         │                              ▼
         │                    规范化后同名 cross-path merge
         │                         （不调用 LLM）
-        │                              │
         └──────────────┬───────────────┘
                        ▼
                   Final Market
@@ -58,22 +53,24 @@ population_scan                  market_discovery
                        ▼
                   market_build
           ┌────────────┼────────────┐
-          │            │            │
           ▼            ▼            ▼
-   Market products   shared users   user history indexes
+   Market products  shared users  user history indexes
                        │
                        ▼
                   case_build
-                       │
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
- Case Discovery      t0 Shelf      Case Population
-        │                             │
-        └──────────────┬──────────────┘
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+ Case Discovery      t0 Shelf    Case Population
+          └────────────┬────────────┘
                        ▼
                   Ground Truth
-                  GT1 + GT2
+                   GT1 + GT2
                        │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+      external_signals      review activity truth
+       价格 / BSR 可选          可选辅助信号
+             └─────────┬─────────┘
                        ▼
                   Quality Gate
                        │
@@ -88,35 +85,35 @@ population_scan                  market_discovery
                        │
                        ▼
                   benchmark_data/
+                       │
+                       ▼
+                    evaluation
 ```
 
 ---
 
-# 3. 当前模块与状态
+# 3. 模块状态
 
-| 模块 | 职责 | 当前状态 |
+| 模块 | 主要职责 | 状态 |
 |---|---|---|
-| `population_scan/` | 大类用户基础盘点 | **已有代码** |
-| `market_discovery/` | path-local Market Discovery + 安全 cross-path 合并 | **已有代码** |
-| `market_build/` | Market 商品资产、共享 population、统一用户事件与历史累计索引 | **已有代码** |
+| `population_scan/` | 大类级用户基础盘点 | **已有代码** |
+| `market_discovery/` | local Market Discovery + 安全 cross-path 同名合并 | **已有代码** |
+| `market_build/` | Market 商品、shared population、用户事件与累计历史 | **已有代码** |
 | `case_build/` | Case discovery、shelf、用户选择、GT、Quality Gate | **已有代码** |
+| `external_signals/` | 历史价格 / BSR 对齐 Case 的稳定接口 | **已有代码；provider 获取待接** |
 | `benchmark_split/` | learning / validation / evaluation 划分 | **已有代码** |
-| `benchmark_export/` | 跨表校验 + 最终 Market→Cases 目录物化 | **已有代码** |
+| `benchmark_export/` | 跨表校验 + 最终 Market→Cases 物化 | **已有代码** |
+| `evaluation/` | GT1 / GT2 / 商品需求与排名评测 | **已有代码** |
 
-“已有代码”表示数据接口和主要计算逻辑已经设计并落仓；具体研究阈值仍以各目录 `TODO.md` 为准。
+这里的“已有代码”指主要数据接口与计算逻辑已经落仓。研究阈值、Keepa provider 请求和部分扩展指标仍按各目录 TODO 冻结。
 
 ---
 
-# 4. `population_scan/`：大类人口扫描
+# 4. Population
 
-输入一个 Amazon 大类用户事件源，输出：
+## `population_scan/`
 
-```text
-users.parquet
-summary.json
-```
-
-一行一个用户：
+对一个大类或 v5 `rating_event_store` 扫描：
 
 ```text
 source_partition
@@ -128,56 +125,11 @@ first_event_date
 last_event_date
 ```
 
-这一层只看完整大类历史做基础盘点，不做 Market / Case 筛选，不看 future GT。
+它只做 case-agnostic 基础盘点，不按未来结果选用户。
 
-支持普通 CSV / Parquet，也兼容 `AmazonReviewrepo@v5` 的 `rating_event_store/`。
+## `market_build/`
 
-详细见 [`population_scan/README.md`](population_scan/README.md)。
-
----
-
-# 5. `market_discovery/`：最终 Market 定义
-
-path-local Discovery 主流程迁自 `AmazonReviewrepo@v5`，继续使用已有 LLM 定义 + 确定性 title assignment 机制。
-
-Cross-path 阶段已经改成固定窄规则：
-
-```text
-同一 source_partition
-+ market_label 规范化后完全相等
-→ 直接合并
-```
-
-例如：
-
-```text
-Phone_Case
-phone-case
-phone case
-```
-
-都会变成：
-
-```text
-phone_case
-```
-
-Cross-path 不再调用大模型，不做开放同义词发现、embedding merge、complete-link clustering。
-
-最终输出：
-
-```text
-final_market.parquet
-final_market.csv
-```
-
-详细见 [`market_discovery/README.md`](market_discovery/README.md)。
-
----
-
-# 6. `market_build/`：Market 共享资产
-
-Final Market 确认后，这一层生成：
+把 Final Market 变成可被多个 Case 复用的资产：
 
 ```text
 market_products.parquet
@@ -189,75 +141,69 @@ user_category_history_cumulative.parquet
 user_market_history_cumulative.parquet
 ```
 
-## Market Population
+Market population 支持 `category / global` 两种来源与确定性哈希抽样；最终策略和规模仍在 TODO 中冻结。
 
-支持：
+详细见：
 
-```text
-population_source = category
-population_source = global
-```
-
-并支持按固定 seed 做确定性用户抽样。
-
-这里选的是 **Market shared population**，不根据任何 Case 的未来购买 / 评论结果选用户。
-
-## 用户历史索引
-
-为了后面大量不同 `t0` 查询，用户历史提前累计成：
-
-```text
-全局历史
-大类历史
-Market 历史
-```
-
-Case 不复制完整用户轨迹。
-
-详细见 [`market_build/README.md`](market_build/README.md)。
+- [`population_scan/README.md`](population_scan/README.md)
+- [`market_build/README.md`](market_build/README.md)
 
 ---
 
-# 7. `case_build/`：完整 Case 构造
+# 5. Market Discovery
 
-## 7.1 Case Discovery
+`market_discovery/` 的 path-local Discovery 主体迁自 `AmazonReviewrepo@v5`。
 
-商品侧主要复用 v5 的时间与累计计算：
+Cross-path 已改成固定窄规则：
+
+```text
+同一 source_partition
++ market_label 安全规范化后完全相等
+→ 直接合并
+```
+
+例如：
+
+```text
+Phone_Case
+phone-case
+phone case
+```
+
+统一为 `phone_case`。
+
+Cross-path 不调用大模型，不做开放同义词发现、embedding merge 或 complete-link clustering。
+
+输出：
+
+```text
+final_market.parquet
+final_market.csv
+```
+
+详细见 [`market_discovery/README.md`](market_discovery/README.md)。
+
+---
+
+# 6. Case Build
+
+## 6.1 Case Discovery
+
+继续复用 v5 已验证的商品时间、区间累计与 ASOF 逻辑：
 
 ```text
 Final Market
-    ↓
-Market 商品时间轴
-    ↓
-每个商品作为 candidate focal
-    ↓
-t0 = first_rating_date
-    ↓
-evaluation window
+→ Market 商品时间轴
+→ 每个商品形成 candidate focal
+→ t0 = first_rating_date
+→ evaluation window
 ```
 
-每个结构完整的新品进入事件都先保留成 candidate case。
+结构完整的新品事件都先保留。旧的“每时间段只选 top-1 focal”、`post90>=50`、固定 competitor 数不再在这里提前筛。
 
-旧 v5 的：
+## 6.2 t0 Shelf
 
-```text
-一个时间段只取一个 focal
-post90>=50
-competitor>=5
-```
-
-不再在这里提前筛。
-
-主要输出：
-
-```text
-case_candidates.parquet
-case_candidates_evaluable.parquet
-```
-
-## 7.2 t0 Shelf
-
-一个商品成为 competitor 需要：
+competitor 基础时间资格：
 
 ```text
 同 Market
@@ -266,7 +212,7 @@ first_rating_date < t0
 last_rating_date >= t0
 ```
 
-通过商品累计表 + ASOF 计算：
+ASOF 计算：
 
 ```text
 pre_t0_review_count
@@ -274,26 +220,11 @@ pre_t0_rating_mean
 pre_t0_recent_review_count
 ```
 
-当前不写死 Top-150、8 CORE + 8 RESERVE 等旧规则。
+Top-150、8 CORE + 8 RESERVE 等旧 selection policy 没有继续写死。
 
-## 7.3 Case Population
+## 6.3 Case Population
 
-目录：[`case_build/population/`](case_build/population/README.md)
-
-```text
-Market shared population
-+ Case t0
-        ↓
-pre-t0 user features
-        ↓
-threshold scan
-        ↓
-eligibility
-        ↓
-fixed case users
-```
-
-主要特征：
+[`case_build/population/`](case_build/population/README.md) 只使用 `t0` 前历史计算：
 
 ```text
 history_product_count
@@ -303,52 +234,40 @@ market_history_product_count
 relation_stratum
 ```
 
-用户集合在 future GT 查询之前固定。
+同时输出 threshold scan，正式阈值冻结以后执行 eligibility 和确定性用户抽样。Case 用户集合在查询 future GT 前锁定。
 
-## 7.4 Ground Truth
+## 6.4 Ground Truth
 
-目录：[`case_build/ground_truth/`](case_build/ground_truth/README.md)
-
-GT2：
+[`case_build/ground_truth/`](case_build/ground_truth/README.md)：
 
 ```text
-全部 Case 用户
-user -> product / none
+GT2: all Case users -> product / none
+GT1: GT2 positives -> target product
+GT2 aggregate -> demand / share / rank
 ```
 
-GT1：
+全部 future shelf 命中事件先保存在构建层，中间的 one-user-one-outcome policy 可以版本化重算。
 
-```text
-GT2 positives
-user -> target_product
-```
-
-GT2 聚合：
-
-```text
-product -> demand_count / demand_share / rank
-```
-
-还支持从完整 shelf future 评论量生成辅助：
+可选生成：
 
 ```text
 review_activity_truth.parquet
 ```
 
-## 7.5 Quality Gate
+用于完整 shelf 的未来评论量排名辅助对照。
 
-目录：[`case_build/quality/`](case_build/quality/README.md)
+## 6.5 Quality Gate
 
-汇总：
+[`case_build/quality/`](case_build/quality/README.md) 汇总：
 
 ```text
-商品侧质量
-用户数
-GT1 正例数
-GT2 market-positive / none
+商品侧结构与活动量
+selected users
+GT1 样本
+GT2 positive / none
 focal demand
-future review activity
-外部 Keepa / BSR signal（可选）
+review activity
+外部价格 / BSR signals（可选）
 ```
 
 输出：
@@ -360,13 +279,39 @@ accepted_cases.parquet
 rejected_cases.parquet
 ```
 
-结构完整性固定检查；具体研究阈值全部配置化。
+结构性校验固定；研究阈值由版本化 JSON 配置。
 
 ---
 
-# 8. `benchmark_split/`
+# 7. External Signals
 
-只读取：
+[`external_signals/`](external_signals/README.md) 定义 provider-agnostic 历史表接口：
+
+```text
+source_partition
+product_id
+event_timestamp / event_date
+price
+bsr / sales_rank
+```
+
+对齐 Case 后输出：
+
+```text
+case_product_external_signals.parquet
+case_external_signals.parquet
+case_shelf_with_external.parquet
+```
+
+因此 Keepa API 获取逻辑以后只需要把原始响应整理成统一历史表，不侵入 Case / GT 主链。
+
+当前实际 Keepa token 调度、响应解析等 provider-specific 客户端仍在 [`external_signals/TODO.md`](external_signals/TODO.md)。
+
+---
+
+# 8. Benchmark Split
+
+[`benchmark_split/`](benchmark_split/README.md) 只读取：
 
 ```text
 market_id
@@ -374,7 +319,7 @@ case_candidate_id
 t0
 ```
 
-不使用 GT 数值决定 split。
+不读取 GT 数值决定归属。
 
 支持：
 
@@ -390,59 +335,69 @@ hybrid
     + seen-market temporal evaluation
 ```
 
-输出只保存 Market / Case 引用。
-
-详细见 [`benchmark_split/README.md`](benchmark_split/README.md)。
-
 ---
 
-# 9. `benchmark_export/`
+# 9. Final Export
 
-最终把所有构建长表做跨表一致性校验，再物化成 `SCHEMA.md` 定义的目录。
-
-导出前检查：
+[`benchmark_export/`](benchmark_export/README.md) 在最终物化前检查：
 
 - Case ID 唯一；
 - focal 在 shelf 恰好一行；
 - GT2 覆盖全部 Case users；
-- GT2 target 都在 shelf；
-- GT1 == GT2 positives；
+- GT2 target 都属于 shelf；
+- GT1 与 GT2 positives 一致；
 - `market_truth` 与 GT2 聚合一致；
-- split 一一覆盖 accepted cases。
+- split 对 accepted cases 一一覆盖。
 
-最终：
+然后按 [`SCHEMA.md`](SCHEMA.md) 生成：
 
 ```text
 benchmark_data/
-├── markets/
-│   └── <market_id>/
-│       ├── market_manifest.json
-│       ├── products.parquet
-│       ├── population/
-│       │   ├── users.parquet
-│       │   └── interactions.parquet
-│       └── cases/
-│           └── <case_id>/
-│               ├── case_manifest.json
-│               ├── shelf.parquet
-│               ├── users.parquet
-│               └── ground_truth/
-│                   ├── choice_truth.parquet
-│                   ├── population_truth.parquet
-│                   └── market_truth.parquet
+├── markets/<market_id>/
+│   ├── market_manifest.json
+│   ├── products.parquet
+│   ├── population/
+│   └── cases/<case_id>/...
 └── splits/
-    ├── learning.json
-    ├── validation.json
-    └── evaluation.json
 ```
 
-详细见 [`benchmark_export/README.md`](benchmark_export/README.md)。
+构建阶段尽量使用长表，只有 exporter 才按 Market / Case 正式物化文件。
 
 ---
 
-# 10. 从 v5 继续复用的部分
+# 10. Evaluation
 
-当前新仓库没有重复重写已有成熟逻辑，主要继续使用 / 改造了：
+[`evaluation/`](evaluation/README.md) 是模拟器输出的数值评测入口。
+
+最小用户预测格式：
+
+```text
+case_candidate_id
+user_id
+predicted_outcome_product_id   # 商品 / NULL
+```
+
+当前指标包括：
+
+```text
+GT1 choice accuracy
+GT2 full outcome accuracy
+market entry accuracy
+market-positive count error
+Kendall tau
+NDCG
+demand total error
+```
+
+如果没有单独商品预测，商品需求直接从个体用户预测聚合；也支持额外输入 `predicted_demand_count / score / rank`。
+
+概率校准、更多 ranking 指标和 review text Turing test 在 [`evaluation/TODO.md`](evaluation/TODO.md)。
+
+---
+
+# 11. 从 v5 继续复用的逻辑
+
+新仓库主要继续使用 / 改造：
 
 ```text
 market_discovery/*
@@ -450,15 +405,15 @@ product_time_summary
 rating daily aggregation
 Market-product timeline
 active competitor interval sweep
-focal / Market pre-t0 cumulative features
+Market pre-t0 cumulative features
 competitor time qualification
 product cumulative review counts
 ASOF pre-t0 features
-truth future-event join
+future-event join
 market review activity ranking
 ```
 
-主要删掉的是和旧 benchmark 强绑定的 selection policy：
+主要移除的是旧 benchmark 强绑定的 selection / packaging policy：
 
 ```text
 每时间段 top-1 focal
@@ -466,12 +421,12 @@ market review activity ranking
 固定 competitor hard gate
 Top-150
 8 CORE + 8 RESERVE
-旧 packaging 层级
+旧 case packaging 层级
 ```
 
 ---
 
-# 11. 当前目录
+# 12. 目录
 
 ```text
 AmazonReviewrsCases/
@@ -483,37 +438,16 @@ AmazonReviewrsCases/
 ├── utils.py
 │
 ├── population_scan/
-│   ├── README.md
-│   ├── TODO.md
-│   └── ...
-│
 ├── market_discovery/
-│   ├── README.md
-│   ├── TODO_CROSS_PATH.md
-│   └── ...
-│
 ├── market_build/
-│   ├── README.md
-│   ├── TODO.md
-│   └── ...
-│
 ├── case_build/
-│   ├── README.md
-│   ├── TODO.md
 │   ├── population/
 │   ├── ground_truth/
-│   ├── quality/
-│   └── ...
-│
+│   └── quality/
+├── external_signals/
 ├── benchmark_split/
-│   ├── README.md
-│   ├── TODO.md
-│   └── ...
-│
-└── benchmark_export/
-    ├── README.md
-    ├── TODO.md
-    └── ...
+├── benchmark_export/
+└── evaluation/
 ```
 
-研究口径还没冻结的地方统一通过 TODO + 配置接口保留；已经确定的层级、时间语义、GT 两层结构和数据职责不再混回旧 pipeline。
+每个主要目录都有自己的 `README.md` 和 `TODO.md`（Market Discovery 使用 `TODO_CROSS_PATH.md`）。已经确定的层级、时间语义和 GT 两层结构保持稳定；尚未确定的阈值与研究选择通过 TODO 和配置接口显式保留。
