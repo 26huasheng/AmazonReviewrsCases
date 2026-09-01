@@ -3,17 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 
-PIPELINE_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent
+# Compatibility name retained for code moved from AmazonReviewrepo/v5.
+PIPELINE_DIR = REPO_ROOT
 
 
 def workspace_root(pipeline_dir: Path = PIPELINE_DIR) -> Path:
-    """Resolve both `<repo>/scripts/sems_market_pipeline` and portable layouts."""
-    candidate = pipeline_dir.parents[1]
-    return candidate if (candidate / "scripts/sems_market_pipeline").resolve() == pipeline_dir.resolve() else pipeline_dir.parent
+    """Return the standalone AmazonReviewrsCases repository root."""
+    return pipeline_dir.expanduser().resolve()
 
 
 def resolve_existing(root: Path, relative: str) -> Path:
-    """Prefer a path inside the workspace; otherwise use the sibling directory if it exists."""
+    """Prefer a path inside this repository, then the repository's parent workspace."""
     inside = root / relative
     if inside.exists():
         return inside
@@ -28,11 +29,8 @@ def default_data_root(pipeline_dir: Path = PIPELINE_DIR) -> Path:
 
 
 def default_reference_repo(pipeline_dir: Path = PIPELINE_DIR) -> Path:
-    bundled = pipeline_dir / "reference_contract"
-    if bundled.is_dir():
-        return bundled
     return resolve_existing(workspace_root(pipeline_dir), "self-evolving-market-simulation")
 
 
 def default_output_root(pipeline_dir: Path = PIPELINE_DIR) -> Path:
-    return resolve_existing(workspace_root(pipeline_dir), "outputs")
+    return workspace_root(pipeline_dir) / "outputs"
