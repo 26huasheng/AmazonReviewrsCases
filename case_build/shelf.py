@@ -82,8 +82,54 @@ def write_shelf_members(
     if missing:
         raise ValueError(f"cases table missing columns: {sorted(missing)}")
 
+    timeline_columns = _columns(con, timeline_path)
+    required_timeline = {
+        "source_partition",
+        "market_id",
+        "product_id",
+        "product_title",
+        "first_rating_date",
+        "last_rating_date",
+        "metadata_snapshot_price",
+    }
+    missing_timeline = required_timeline - timeline_columns
+    if missing_timeline:
+        raise ValueError(
+            f"market timeline missing columns: {sorted(missing_timeline)}"
+        )
+
+    duplicate_cases = con.execute("""
+        SELECT case_candidate_id, count(*)
+        FROM read_parquet(?)
+        GROUP BY case_candidate_id
+        HAVING count(*) > 1
+        ORDER BY case_candidate_id
+        LIMIT 10
+    """, [str(cases_path)]).fetchall()
+    if duplicate_cases:
+        raise ValueError(f"duplicate case_candidate_id rows: {duplicate_cases}")
+
     cases = sql_literal(str(cases_path))
     timeline = sql_literal(str(timeline_path))
+
+    missing_focal = con.execute(f"""
+        SELECT c.case_candidate_id,
+               c.market_id,
+               c.focal_product_id
+        FROM read_parquet({cases}) c
+        LEFT JOIN read_parquet({timeline}) t
+          ON c.source_partition = t.source_partition
+         AND c.market_id = t.market_id
+         AND c.focal_product_id = t.product_id
+        WHERE t.product_id IS NULL
+        ORDER BY c.case_candidate_id
+        LIMIT 10
+    """).fetchall()
+    if missing_focal:
+        raise ValueError(
+            f"case focal missing from market timeline: {missing_focal}"
+        )
+
     copy_atomic(f"""
         WITH focal AS (
             SELECT c.case_candidate_id,
@@ -130,6 +176,20 @@ def write_shelf_members(
         UNION ALL
         SELECT * FROM competitors
     """, destination)
+
+    bad_focal_count = con.execute("""
+        SELECT case_candidate_id,
+               count(*) FILTER (role='focal') AS n_focal
+        FROM read_parquet(?)
+        GROUP BY case_candidate_id
+        HAVING count(*) FILTER (role='focal') <> 1
+        ORDER BY case_candidate_id
+        LIMIT 10
+    """, [str(destination)]).fetchall()
+    if bad_focal_count:
+        raise ValueError(
+            f"each case must have exactly one focal shelf row: {bad_focal_count}"
+        )
 
 
 def attach_shelf_features(
