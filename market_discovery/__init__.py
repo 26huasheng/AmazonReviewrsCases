@@ -1,9 +1,15 @@
+from .cross_path_merge import (
+    MERGE_POLICY,
+    merge_exact_normalized_markets,
+    merge_exact_normalized_rows,
+)
 from .discovery_pipeline import MarketDiscoveryPipeline
 from .discovery_rules import (
     MarketRule,
     adaptive_sample_size,
     classify_title,
     deterministic_rank,
+    normalize_market_label,
     select_round1_sample,
     select_round2_sample,
     stable_local_market_id,
@@ -15,6 +21,7 @@ from .market_llm import FixtureMarketLLMClient, MarketLLMClient
 
 __all__ = [
     "MARKET_TABLE_FIELDS",
+    "MERGE_POLICY",
     "MarketDiscoveryPipeline",
     "MarketLLMClient",
     "FixtureMarketLLMClient",
@@ -22,6 +29,9 @@ __all__ = [
     "adaptive_sample_size",
     "classify_title",
     "deterministic_rank",
+    "merge_exact_normalized_markets",
+    "merge_exact_normalized_rows",
+    "normalize_market_label",
     "select_round1_sample",
     "select_round2_sample",
     "stable_local_market_id",
