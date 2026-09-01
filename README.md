@@ -133,7 +133,47 @@ Case 表示一次真实的新品进入市场事件。
 - GT1；
 - GT2。
 
-当前使用 focal 商品的首评时间近似 `t0`。Case 按自己的 `t0` 截断商品历史和用户历史；future 数据只进入 Ground Truth 与质量检查流程。
+当前使用 focal 商品的首评时间近似 `t0`。Case 按自己的 `t0` 截断商品历史和用户历史；future 数据只用于评测窗口完整性、质量统计和 Ground Truth。
+
+### 3.1 商品侧 Case Build
+
+`case_build/` 已经接入 v5 中可复用的商品时间、区间累计和 ASOF 逻辑，当前完成：
+
+```text
+Final Market
+    ↓
+Market 商品时间轴
+    ↓
+每个商品形成候选新品进入事件
+    ↓
+case_candidates.parquet
+    ↓
+指定一批 Case
+    ↓
+t0 shelf + pre-t0 商品统计
+```
+
+当前保留：
+
+- `t0 = first_rating_date`；
+- evaluation window 完整性检查；
+- t0 时活跃 competitor 数统计；
+- 同 Market 商品的 `first_rating_date < t0`、`last_rating_date >= t0` 时间资格；
+- 商品累计评论量 / 累计评分和；
+- ASOF 计算 `pre_t0_review_count`、`pre_t0_rating_mean`；
+- 最近窗口活动量统计。
+
+当前没有继续使用 v5 的：
+
+```text
+每个时间段只留 1 个 focal
+post90 >= 50 硬门槛
+competitor >= 5 硬门槛
+Top-150 截断
+8 CORE + 8 RESERVE
+```
+
+Shelf 物化要求显式传入 Case 表，避免超大 Market 对全部候选 Case 直接做 `case × product` 展开。详细接口和剩余事项见 [`case_build/README.md`](case_build/README.md) 与 [`case_build/TODO.md`](case_build/TODO.md)。
 
 ## 4. Population
 
@@ -235,10 +275,10 @@ AmazonReviewrsCases/
 │
 ├── population_scan/              # 已有定义：大类人口基础扫描
 ├── market_discovery/             # 已有代码：local discovery + exact cross-path merge
-├── tests/                        # 已开始迁移 / 新增 discovery tests
+├── case_build/                   # 已有代码：商品时间轴 / Case discovery / t0 shelf
+├── tests/                        # discovery + case_build 回归测试
 │
 ├── market_build/                 # 计划：共享 population 与 Market 资产组织
-├── case_build/                   # 计划：case discovery / users / GT / quality gate
 └── benchmark_split/              # 计划：learning / validation / evaluation split
 ```
 
