@@ -1,63 +1,97 @@
-# TODO：Cross-path 合并（尚未实现）
+# TODO：Market Discovery / Cross-path 剩余项
 
-位置：与本目录的 Market Discovery 衔接，代码以后从 `AmazonReviewrepo` v5 的 `market_merge` **搬过来再砍薄**，现在先只写口径。
+Cross-path 的正式第一版规则已经实现：
 
-Discovery 按 Amazon **类目路径**各自定义 local market。不同 path 上会出现「其实是同一个购买对象」的市场。v5 现有 cross-path 会做精确同名 + LLM 同义词 + complete-link 聚类，范围偏宽。本仓后续只要一层很窄的合并。
+```text
+同一 source_partition
++ market_label 安全格式规范化后完全相等
+→ 自动合并
+```
 
-## 目标
+当前实现不调用任何 cross-path merge LLM。
 
-只合并 **名称已经是同一回事、只是写法/格式不一样** 的市场。
-不根据商品重叠、不根据 LLM 自由发明同义词去并市场。
+已覆盖的格式差异包括：
 
-## 允许合并的情况
+- 大小写；
+- 空格 / `-` / `_` 等分隔符；
+- 重复分隔符；
+- 首尾空白；
+- Unicode NFKC 兼容形。
 
-视为「名称完全一致」的，例如：
+例如：
 
-- 大小写：`Phone_Case` / `phone_case`
-- 分隔符：`phone-case` / `phone_case` / `phone case`
-- 多余空白、首尾空格、重复下划线
-- Unicode 兼容形（NFKC）之后相同
+```text
+Phone_Case
+phone-case
+phone case
+```
 
-规范化后字符串相等 → **直接合并**，不必问 LLM。
+都会合并到：
 
-## 最多再加的一步：简单相似 + LLM 复核
+```text
+phone_case
+```
 
-规范化之后仍不相等的 pair，可以算一个很便宜的字面相似度（如规范化标签的编辑距离 / token Jaccard）。
+## 还需要做的事情
 
-- 低于阈值：不是候选，不送 LLM
-- 超过阈值：只把这个 pair 交给 LLM，问一句「是不是同一个 product object 的两种写法」
-- LLM 说是，才合并；说不是或不确定，保持两个市场
+### 1. 在真实全量输出上跑一次 merge audit
 
-LLM 不得：
+代码和单元测试已经有了，但还需要在正式 Market Discovery 全量结果上检查：
 
-- 提出新的市场名
-- 以「都是手机配件」这类上位概念为由合并
-- 把 `phone_case` 和 `phone_cover` 这类近义（若规范化后仍不同）自动当成同名；只有过了相似度阈值且 LLM 明确判定「只是格式/叫法」才可以
+- merge 前后 market 数量；
+- 每个 merge group 的原始 labels；
+- 每个 merge group 涉及的 paths；
+- 合并后的 product union 是否符合预期。
 
-第一版实现时，相似度阈值先写进配置，不写死。宁可漏并，不要错并。
+对应审计文件已经预留：
 
-## 明确不做
+```text
+cross_path_exact_merge_audit.json
+cross_path_exact_merge_summary.json
+```
 
-- v5 那种开放的同义词发现、complete-link 一大团并在一起
-- 用商品集合重叠、共同 ASIN、共同 path 当合并证据
-- 一次合并超过一对（先 pair-wise；真要并三个，必须每个 pair 都过关）
-- 改 Market Discovery 的打分规则或 prompt
+### 2. 观察是否真实出现当前规范化覆盖不到的纯格式变体
 
-## 建议输入 / 输出（实现时再落文件）
+当前不会自动处理无法安全恢复词边界的形式，例如：
 
-输入：Discovery 的 `local_market_definitions` / `first_market`（每个 path 上的 `market_label`）。
+```text
+smartwatch
+smart_watch
+```
 
-输出设想：
+也不会处理：
 
-- `cross_path/markets_after_merge.parquet`
-- 一份审计：哪些是规范化后直接并的，哪些是过阈值后 LLM 判是的，哪些被 LLM 拒绝
+```text
+phone_case
+phone_cases
 
-人工审核可以后补，第一版不作为硬门。
+phone_case
+phone_cover
+```
 
-## 实现顺序
+这些可能是词形变化、命名习惯，也可能已经涉及语义判断。第一版先保留成两个 market，避免误并。
 
-1. 从 v5 `market_merge` 把能用的读写结构拷过来
-2. 删掉同义词 / complete-link 那几支
-3. 先接通「规范化后全等 → 合并」
-4. 再加相似度阈值 + pair 级 LLM
-5. 用几个已知同名异写、近义不应并的例子看审计表
+如果全量 audit 证明存在大量明确的 **纯格式问题**，再针对具体模式增加确定性 normalization rule；不引入开放式 LLM semantic merge。
+
+### 3. 搬/改更多 v5 regression tests
+
+目前已经补了 cross-path normalized exact merge 的单元测试。
+
+后续还可以从 `AmazonReviewrepo@v5` 继续迁：
+
+```text
+test_market_discovery_and_merge.py
+test_market_scoring.py
+```
+
+迁移时只改 import 和已经变化的 cross-path 预期，不改核心 path-local scoring contract。
+
+## 明确不列入 TODO
+
+以下内容已经决定不做：
+
+- LLM 同义词合并；
+- semantic embedding merge；
+- complete-link 聚类；
+- 商品集合重叠驱动的自动 merge；
+- 为了减少 market 数量主动扩大合并范围。
