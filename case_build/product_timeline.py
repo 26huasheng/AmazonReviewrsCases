@@ -45,6 +45,32 @@ def validate_product_time_summary(
             f"product_time_summary missing columns: {sorted(missing)}"
         )
 
+    duplicates = con.execute("""
+        SELECT source_partition, product_id, count(*)
+        FROM read_parquet(?)
+        GROUP BY source_partition, product_id
+        HAVING count(*) > 1
+        ORDER BY source_partition, product_id
+        LIMIT 10
+    """, [str(path)]).fetchall()
+    if duplicates:
+        raise ValueError(
+            f"duplicate product_time_summary rows: {duplicates}"
+        )
+
+    mismatched_entry = con.execute("""
+        SELECT source_partition, product_id, entry_date, first_rating_date
+        FROM read_parquet(?)
+        WHERE entry_date IS DISTINCT FROM first_rating_date
+        ORDER BY source_partition, product_id
+        LIMIT 10
+    """, [str(path)]).fetchall()
+    if mismatched_entry:
+        raise ValueError(
+            "product_time_summary entry_date must equal first_rating_date; "
+            f"examples: {mismatched_entry}"
+        )
+
 
 def write_product_time_summary_from_daily(
     con: duckdb.DuckDBPyConnection,
