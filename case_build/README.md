@@ -33,11 +33,12 @@ temporal_segmentation/attach_market_ids.py
 temporal_segmentation/competitor_count_at_entry.py
 temporal_segmentation/focal_prefilter.py
 temporal_segmentation/assign_segments.py
+focal_selection/focal_features.py
 competitor_selection/build_wide_pool.py
 competitor_selection/activity_features.py
 ```
 
-保留的是已经验证过的时间计算、累计统计和 ASOF 查询；旧的 focal top-1、未来评论量硬阈值、固定 competitor 数、150 截断、8 CORE + 8 RESERVE 都没有带进来。
+保留的是已经验证过的时间计算、Market many-to-one 汇总、累计统计和 ASOF 查询；旧的 focal top-1、未来评论量硬阈值、固定 competitor 数、150 截断、8 CORE + 8 RESERVE 都没有带进来。
 
 ## 1. Case Discovery
 
@@ -48,17 +49,26 @@ python -m case_build.cli discover \
   --final-market outputs/market_discovery/market_v1/final_market.parquet \
   --product-core /path/to/product_core.parquet \
   --product-time-summary /path/to/product_time_summary.parquet \
+  --rating-daily-summary /path/to/rating_daily_summary.parquet \
   --storage-metadata /path/to/storage_metadata.json \
   --output-dir outputs/case_build/discovery
 ```
 
-如果没有现成 `product_time_summary.parquet`，也可以提供：
+`product_time_summary.parquet` 与 v5 接口兼容。已有文件时直接复用；如果没有，也可以只提供：
 
 ```bash
 --rating-daily-summary /path/to/rating_daily_summary.parquet
 ```
 
 代码会从逐日表重新生成商品首评/末评汇总。
+
+如果同时提供 `rating_daily_summary`，还会按 v5 已验证的 many-to-one 方式先把商品日评论汇总到 Market，再做累计，从而得到每个 Case 的：
+
+```text
+market_pre_t0_review_count
+```
+
+这一步不会构造 `focal × market products` 网格。
 
 ### 输出
 
@@ -73,7 +83,10 @@ python -m case_build.cli discover \
     ├── product_time_summary.parquet        # 仅在没有外部输入时生成
     ├── active_product_interval_events.parquet
     ├── active_product_count_cumulative.parquet
-    └── case_candidates_without_boxes.parquet
+    ├── market_daily_review_count.parquet  # 有 rating_daily 时生成
+    ├── market_review_cumulative.parquet   # 有 rating_daily 时生成
+    ├── case_candidates_without_boxes.parquet
+    └── case_candidates_with_boxes.parquet
 ```
 
 ### `market_product_timeline.parquet`
@@ -107,12 +120,21 @@ evaluation_end_exclusive
 evaluation_days
 post90_rating_count
 active_competitor_count_at_t0
+market_pre_t0_review_count
 valid_t0
 evaluation_window_complete
 time_box_id
 ```
 
-这里 `post90_rating_count` 和 `active_competitor_count_at_t0` 只是质量统计字段，不会提前淘汰 Case。
+其中：
+
+```text
+post90_rating_count
+active_competitor_count_at_t0
+market_pre_t0_review_count
+```
+
+都只是质量统计字段，不会提前淘汰 Case。
 
 `case_candidates_evaluable.parquet` 只做两项结构性筛选：
 
