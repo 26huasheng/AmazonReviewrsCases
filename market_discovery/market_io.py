@@ -7,7 +7,7 @@ from typing import Any, Iterable, Sequence
 
 import duckdb
 
-from ..utils import sql_literal
+from utils import sql_literal
 
 
 MARKET_TABLE_FIELDS = (
