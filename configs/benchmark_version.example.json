@@ -1,0 +1,37 @@
+{
+  "benchmark_version": "UNFROZEN",
+  "market_discovery_version": null,
+  "population": {
+    "market_population_source": null,
+    "market_population_size": null,
+    "case_min_history_products": null,
+    "case_max_days_since_last_event": null,
+    "case_target_users": null,
+    "sampling_seed": null
+  },
+  "case": {
+    "evaluation_days": 90,
+    "shelf_max_products": null,
+    "recent_activity_window_days": 120,
+    "recent_activity_min_reviews": null
+  },
+  "ground_truth": {
+    "outcome_policy": "first_observed_event"
+  },
+  "quality": {
+    "rules_file": "quality_rules.json"
+  },
+  "split": {
+    "strategy": null,
+    "seed": null,
+    "learning_fraction": null,
+    "validation_fraction": null,
+    "unseen_market_fraction": null
+  },
+  "external_signals": {
+    "enabled": false,
+    "provider": null,
+    "source_version": null
+  },
+  "schema_version": "market_cases_v1"
+}
