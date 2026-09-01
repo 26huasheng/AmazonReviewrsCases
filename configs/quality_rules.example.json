@@ -1,0 +1,12 @@
+{
+  "min_shelf_products": null,
+  "min_competitors": null,
+  "min_selected_users": null,
+  "min_gt1_users": null,
+  "min_market_positive_users": null,
+  "max_none_rate": null,
+  "min_focal_demand_count": null,
+  "min_post90_rating_count": null,
+  "min_market_pre_t0_review_count": null,
+  "require_review_activity_truth": false
+}
