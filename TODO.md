@@ -81,23 +81,33 @@ Keepa / BSR screening
 
 ## 7. 外部数据
 
-Keepa / BSR 获取逻辑当前通过 `quality --external-signals` 预留了稳定接口，尚未把具体付费 API 客户端写入本仓。
+`external_signals/` 已经定义 provider-agnostic 的价格 / BSR 历史接口与 Case 对齐逻辑，尚未实现具体 Keepa API 获取客户端。
 
-外部数据层最终至少要定义：
+需要冻结：
 
-```text
-case_candidate_id
-product_id（需要时）
-signal timestamp / window
-BSR / sales proxy / historical price
-coverage / missing status
-```
+- Keepa product 映射；
+- token / 批量请求策略；
+- t0 历史价格向前回看规则；
+- BSR future 统计口径；
+- 外部信号只用于筛 Case，还是也进入正式商品侧评测。
 
-外部信号首先服务 Case 筛选；是否进入正式评测指标另行冻结。
+对应：`external_signals/TODO.md`。
+
+## 8. Evaluation 版本
+
+当前 evaluator 已实现确定性用户选择和商品排名第一版指标。正式论文 / benchmark 还需要冻结：
+
+- macro by Case / Market / weighted 的汇总口径；
+- seen-market temporal 与 unseen-market 是否分别作为主表；
+- 是否加入概率预测接口与 calibration；
+- 商品侧是否增加 demand-share divergence、top-k overlap 等指标；
+- review text Turing test 的独立评测协议。
+
+对应：`evaluation/TODO.md`。
 
 ---
 
-## 已经固定、不要重新讨论的主结构
+## 已经固定的主结构
 
 ```text
 Market
@@ -121,4 +131,5 @@ Market
 - `t0` 当前由 focal 首评时间近似；
 - Case population 必须在 future GT 查询前固定；
 - split 在 accepted cases 之后做，且不读取 GT 数值决定归属；
-- 最终文件由 `benchmark_export/` 按 `SCHEMA.md` 物化。
+- 最终文件由 `benchmark_export/` 按 `SCHEMA.md` 物化；
+- 模拟器输出通过 `evaluation/` 的稳定 prediction schema 与 GT 对齐。
