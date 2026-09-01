@@ -1,119 +1,88 @@
-# TODO：Case Build 后续事项
+# case_build TODO
 
-当前 `case_build` 已经接通商品侧主链，但下面这些规则还没有在没有数据依据的情况下写死。
-
-## 1. Shelf 最终截断规则
-
-当前 t0 时间资格通过的商品全部进入 shelf 候选，不做：
+`case_build` 的商品侧、用户侧、GT 和 Quality Gate 代码骨架都已经接通。这个总 TODO 只保留跨商品侧的未冻结事项；更细的研究口径分别见：
 
 ```text
-Top-150
-Top-8
-8 CORE + 8 RESERVE
+population/TODO.md
+ground_truth/TODO.md
+quality/TODO.md
 ```
 
-需要先统计真实 `Market × Case` 的 shelf size 分布，再决定：
+## 1. Shelf 最终规模规则
 
-- 是否需要上限；
-- 大 Market 如何截断；
-- 截断时用长期热度、近期活跃度、价格还是其他规则排序。
+当前所有通过时间资格的商品都进入 shelf：
 
-这一步确定前，正式大规模运行应先选出需要继续处理的 Case，再调用 shelf 物化，避免超大 Market 的 `case × product` 展开。
+```text
+product_id != focal
+first_rating_date < t0
+last_rating_date >= t0
+```
 
-## 2. 活跃度阈值
+尚未决定：
 
-目前已经计算：
+- 是否需要 shelf size 上限；
+- 极大 Market 是否截断；
+- 截断时依据长期评论量、近期活跃度、价格或其它信号。
+
+v5 的 `Top-150 / 8 CORE + 8 RESERVE` 没有继续写死。
+
+## 2. 商品活跃度阈值
+
+已经计算：
 
 ```text
 pre_t0_recent_review_count
 ```
 
-默认窗口为 `[t0-120天, t0)`。
+默认最近窗口 `[t0-120天, t0)`。
 
-v5 的 `>=10` 只保留为历史参考，没有继续作为硬门槛。需要在真实分布和 Case 保留率统计后冻结阈值。
+是否要求最近窗口至少多少条评论，需要看真实 shelf size / 活跃度分布以后冻结。
 
-## 3. `last_rating_date >= t0` 的含义
+## 3. 商品“仍在市场”代理
 
-当前用首评/末评观测区间近似商品在市场中的可见生命周期：
+当前使用：
 
 ```text
 first_rating_date < t0
 last_rating_date >= t0
 ```
 
-这是 Amazon Reviews 数据上的可操作代理，并不等同于真实 Amazon 上架/下架状态。后续若 Keepa 能稳定提供商品 availability / offer history，需要评估是否替换或增强这个资格定义。
+它表示 Amazon Reviews 观测意义下的活跃区间。后续如果 Keepa 能提供更可靠的 availability / offer history，可以增强这一资格定义。
 
 ## 4. 历史价格
 
-当前只有 Amazon metadata snapshot price，因此：
+当前：
 
 ```text
-metadata_snapshot_price   # 保留
+metadata_snapshot_price   # 只作 metadata 参考
 price_at_t0 = NULL
+price_source = NULL
 ```
 
-待 Keepa 接入以后，需要：
+Keepa 接入后需要冻结：
 
-- 定义 `price_at_t0` 的取值规则；
-- 处理 t0 当天无价格记录时的最近值回填；
-- 保存价格来源和时间戳；
-- 明确价格序列的缺失处理。
+- t0 当日价格取值；
+- 当日缺失时的最近历史值规则；
+- 价格时间戳与来源字段；
+- 价格序列缺失处理。
 
-## 5. Case Quality Gate
+## 5. Case candidate 到正式 case_id
 
-当前只做结构性检查：
+构建阶段继续使用稳定的：
 
 ```text
-valid_t0
-evaluation_window_complete
+case_candidate_id
 ```
 
-还没有用下面这些字段提前淘汰：
+最终 exporter 当前直接把它作为目录 case id。若论文 / 发布版需要另一套短 ID，应在 export 阶段增加显式映射表，不修改上游事实表主键。
 
-```text
-post90_rating_count
-active_competitor_count_at_t0
-shelf size
-```
+## 6. 工程优化
 
-最终 Quality Gate 需要和后续用户侧一起决定，并至少纳入：
+大 Market 正式全量运行时可以继续增加：
 
-```text
-可用用户数
-GT1 正样本数
-GT2 market-positive 数
-none 比例
-商品侧未来活动量
-外部 BSR / sales proxy
-```
+- shelf 分批物化；
+- checkpoint / resume；
+- DuckDB 临时目录容量统计；
+- Market 级并行。
 
-## 6. Final Case 物化
-
-现在输出仍是构造阶段的扁平表：
-
-```text
-case_candidates.parquet
-case_shelf.parquet
-```
-
-等 Population + GT + Quality Gate 完成后，再按照根目录 `SCHEMA.md` 物化成：
-
-```text
-benchmark_data/markets/<market_id>/cases/<case_id>/
-├── case_manifest.json
-├── shelf.parquet
-├── users.parquet
-└── ground_truth/
-```
-
-最终 `case_id` 的正式分配也放在这一步完成；当前使用稳定的 `case_candidate_id`。
-
-## 7. 大规模性能审计
-
-代码沿用了 v5 已验证的：
-
-- 区间事件累计计算 active competitor 数；
-- 商品累计评论表只算一次；
-- ASOF 查询 pre-t0 特征。
-
-仍需在真实最大 Market 上单独审计 shelf 输出规模、DuckDB 临时磁盘占用和运行时间。
+这些只影响运行方式，不改变当前 Case 数据语义。
