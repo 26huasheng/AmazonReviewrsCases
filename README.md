@@ -1,4 +1,4 @@
-# AmazonReviewrsCases
+# AmazonReviewsCases
 
 Amazon Reviews 2023 上的 SEMS benchmark 构造与评测仓库。
 
