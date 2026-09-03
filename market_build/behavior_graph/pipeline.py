@@ -9,17 +9,12 @@ import duckdb
 from utils import sql_literal, write_json
 
 from .audit import write_graph_market_overlap, write_market_graph_summary
-from .case_features import (
-    write_case_component_membership,
-    write_case_graph_features,
-    write_case_pair_snapshot,
-    write_case_strong_edges,
-)
 from .components import write_full_graph_components
 from .config import BehaviorGraphRules
 from .cumulative import write_pair_cumulative, write_product_user_cumulative
 from .full_graph import write_full_graph_edges
 from .pair_events import write_pair_full_counts, write_pair_user_events
+from .selection import write_case_focal_coreview_features, write_selected_case_shelf
 from .user_product import write_product_user_totals, write_user_product_first
 
 
@@ -47,7 +42,7 @@ class _DuckDBStage:
 
 
 class BehaviorGraphBuildPipeline(_DuckDBStage):
-    """构造完整时期 audit graph + 可供历史 Case ASOF 的累计共评索引。"""
+    """构造 Market 内共评累计索引，并保留完整时期 audit graph。"""
 
     def __init__(
         self,
@@ -125,6 +120,8 @@ class BehaviorGraphBuildPipeline(_DuckDBStage):
             self.pair_cumulative,
             self._copy_atomic,
         )
+
+        # 完整时期图只保留作构建侧 audit，不参与历史 Case 选择。
         write_full_graph_edges(
             self.con,
             self.pair_full_counts,
@@ -159,21 +156,14 @@ class BehaviorGraphBuildPipeline(_DuckDBStage):
 
         payload = {
             "status": "COMPLETE",
-            "schema_version": "behavior_graph_v1",
+            "schema_version": "behavior_graph_v2",
             "graph_rules": self.rules.as_dict(),
-            "pair_scope": "same_leaf_category",
+            "pair_scope": "same_final_market_and_same_leaf_category",
             "user_product_membership": "first_observed_interaction",
             "pair_event_date": "max(first_event_date_a, first_event_date_b)",
             "case_visibility_rule": "event_date < t0",
             "full_graph_role": "audit_only",
-            "full_graph_edge_count": int(self.con.execute(
-                "SELECT count(*) FROM read_parquet(?)", [str(self.full_graph_edges)]
-            ).fetchone()[0]),
-            "full_graph_component_count": int(self.con.execute(
-                "SELECT count(DISTINCT graph_component_id) FROM read_parquet(?) "
-                "WHERE graph_component_id IS NOT NULL",
-                [str(self.full_graph_components)],
-            ).fetchone()[0]),
+            "production_case_role": "focal_centered_competitor_selection_only",
             "pair_cumulative_path": str(self.pair_cumulative),
             "product_user_cumulative_path": str(self.product_user_cumulative),
         }
@@ -182,7 +172,7 @@ class BehaviorGraphBuildPipeline(_DuckDBStage):
 
 
 class BehaviorGraphCasePipeline(_DuckDBStage):
-    """给已经物化 shelf 的一批 Case 增加严格 pre-t0 的行为图关系。"""
+    """用 pre-t0 focal 共评关系把过大的 Case shelf 截到最多 16 个竞品。"""
 
     def __init__(
         self,
@@ -212,10 +202,8 @@ class BehaviorGraphCasePipeline(_DuckDBStage):
                 raise FileNotFoundError(path)
 
         self.work_dir = self.output_dir / "_work"
-        self.case_pair_snapshot = self.work_dir / "case_pair_snapshot.parquet"
-        self.case_strong_edges = self.work_dir / "case_strong_edges.parquet"
-        self.case_components = self.work_dir / "case_component_membership.parquet"
-        self.case_graph_features = self.output_dir / "case_graph_features.parquet"
+        self.focal_coreview_features = self.work_dir / "case_focal_coreview_features.parquet"
+        self.case_shelf_selected = self.output_dir / "case_shelf_selected.parquet"
         self.summary_path = self.output_dir / "case_graph_summary.json"
         self._configure(self.output_dir)
 
@@ -223,58 +211,54 @@ class BehaviorGraphCasePipeline(_DuckDBStage):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-        write_case_pair_snapshot(
+        write_case_focal_coreview_features(
             self.con,
             self.case_shelf,
             self.market_products,
             self.product_user_cumulative,
             self.pair_cumulative,
-            self.case_pair_snapshot,
-            self._copy_atomic,
-        )
-        write_case_strong_edges(
-            self.con,
-            self.case_pair_snapshot,
-            self.case_strong_edges,
+            self.focal_coreview_features,
             self._copy_atomic,
             min_endpoint_users=self.rules.min_endpoint_users,
             min_shared_users=self.rules.min_shared_users,
         )
-        write_case_component_membership(
+        write_selected_case_shelf(
             self.con,
             self.case_shelf,
-            self.market_products,
-            self.case_strong_edges,
-            self.product_user_cumulative,
-            self.case_components,
+            self.focal_coreview_features,
+            self.case_shelf_selected,
             self._copy_atomic,
-            min_endpoint_users=self.rules.min_endpoint_users,
-        )
-        write_case_graph_features(
-            self.con,
-            self.case_shelf,
-            self.case_pair_snapshot,
-            self.case_strong_edges,
-            self.case_components,
-            self.case_graph_features,
-            self._copy_atomic,
+            max_competitors=self.rules.max_competitors,
         )
 
         payload = {
             "status": "COMPLETE",
-            "schema_version": "case_behavior_graph_v1",
+            "schema_version": "case_behavior_graph_v2",
             "graph_rules": self.rules.as_dict(),
             "future_data_used": False,
-            "visibility_rule": "all graph counts use event_date < case.t0",
+            "visibility_rule": "all co-review counts use event_date < case.t0",
+            "selection_policy": {
+                "trigger": f"competitor_pool_size > {self.rules.max_competitors}",
+                "priority_1": "strong pre-t0 focal co-review relation",
+                "priority_2": "shared_users_pre_t0 descending within strong relations",
+                "fill": "pre_t0_recent_review_count then pre_t0_review_count",
+            },
             "case_count": int(self.con.execute(
                 "SELECT count(DISTINCT case_candidate_id) FROM read_parquet(?)",
-                [str(self.case_graph_features)],
+                [str(self.case_shelf_selected)],
             ).fetchone()[0]),
-            "direct_strong_edge_rows": int(self.con.execute(
-                "SELECT count(*) FROM read_parquet(?) "
-                "WHERE graph_relation='direct_strong_edge'",
-                [str(self.case_graph_features)],
+            "selection_triggered_case_count": int(self.con.execute(
+                "SELECT count(DISTINCT case_candidate_id) FROM read_parquet(?) "
+                "WHERE selection_triggered",
+                [str(self.case_shelf_selected)],
             ).fetchone()[0]),
+            "max_selected_competitors": int(self.con.execute(
+                "SELECT max(n) FROM ("
+                "SELECT case_candidate_id, count(*) FILTER (WHERE role='competitor') AS n "
+                "FROM read_parquet(?) GROUP BY case_candidate_id)",
+                [str(self.case_shelf_selected)],
+            ).fetchone()[0] or 0),
+            "selected_shelf_path": str(self.case_shelf_selected),
         }
         write_json(self.summary_path, payload)
         return payload
