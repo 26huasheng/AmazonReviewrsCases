@@ -79,7 +79,7 @@ shelf.py
 CaseShelfBuilder
 ```
 
-一个 competitor 进入 Case shelf 需要：
+一个 competitor 进入基础 Case shelf 需要：
 
 ```text
 同一 Market
@@ -96,14 +96,48 @@ pre_t0_rating_mean
 pre_t0_recent_review_count
 ```
 
-当前不做：
+基础 shelf 先保留所有通过时间资格的竞品，然后交给：
 
 ```text
-Top-150
-最近120天>=10硬筛
-8 CORE + 8 RESERVE
-固定 competitor 数
+market_build/behavior_graph
 ```
+
+做最终规模控制。
+
+当前第一版固定：
+
+```text
+K = 16 competitors
+```
+
+即：
+
+```text
+competitor 数 <= 16
+→ 全部保留
+
+competitor 数 > 16
+→ 只比较 focal 与每个 competitor 的严格 pre-t0 共评关系
+→ 强共评竞品优先
+→ 强共评不足 16 时按 pre_t0_recent_review_count 补齐
+```
+
+强共评条件沿用 Electronics 预实验：
+
+```text
+same leaf_category
+focal_users_pre_t0 >= 100
+competitor_users_pre_t0 >= 100
+shared_users_pre_t0 >= 5
+```
+
+最终一个 Case 最多：
+
+```text
+1 focal + 16 competitors
+```
+
+不再使用 `Top-150`、`8 CORE + 8 RESERVE`、component-based Market 分裂。
 
 Amazon metadata snapshot price 只保留成 `metadata_snapshot_price`，不会冒充历史 `price_at_t0`。
 
@@ -170,7 +204,7 @@ market_truth.parquet
 review_activity_truth.parquet
 ```
 
-它直接对完整 shelf 的未来评论量排名，作为辅助商品侧真值 / 质量信号。
+它直接对最终 shelf 的未来评论量排名，作为辅助商品侧真值 / 质量信号。
 
 ---
 
@@ -210,6 +244,8 @@ rejected_cases.parquet
 
 它现在只是 Case 的 `time_box_id` 属性，不再产生 `Market Segment` 层级。
 
+behavior graph 的选择统计按每个 Case 自己精确的 `< t0` 计算，与 time box 的结束时间无关。
+
 所有时间窗口使用半开区间 `[start, end)`。
 
 ---
@@ -225,7 +261,11 @@ case_candidates_evaluable.parquet
         ↓
 case_build shelf
         ↓
-case_shelf.parquet
+case_shelf.parquet                 # 完整时间资格 shelf
+        ↓
+market_build.behavior_graph case
+        ↓
+case_shelf_selected.parquet        # 最多16个竞品
         ↓
 case_build.population
         ↓
