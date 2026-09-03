@@ -1,17 +1,20 @@
 # behavior_graph
 
-这一目录负责把 Amazon Reviews 中的 **用户—商品行为关系** 转成 Final Market 内的商品共评图，并给历史 Case 提供严格的 `pre-t0` 行为关系特征。
+这一目录负责把 Amazon Reviews 中的 **用户—商品共评关系** 用到 Final Market 内的竞品筛选。
 
-它的定位固定为：
+正式 benchmark 的定位现在已经收紧：
 
-- Market Discovery 定义语义上的市场边界；
-- behavior_graph 描述同一个 Market 内商品之间真实用户行为有多接近；
-- 图不会重新定义 Final Market；
-- 图可以用于 Market 审计，也可以在 Case shelf 里标记“核心竞品 / 近邻竞品”。
+```text
+Final Market 决定竞争范围
++t0 决定当时哪些商品在场
++behavior_graph 只在竞品过多时帮助 focal 选更近的竞品
+```
 
-## 1. 已有实验口径
+**不再根据二部图分裂 Final Market，也不在正式 Case 里做连通分量分组。**
 
-此前在 Electronics 上做过一次完整时期共评投影实验。口径为：
+## 1. 已有预实验
+
+此前 Electronics 上做过完整时期共评投影实验：
 
 ```text
 同一个 Amazon leaf category
@@ -19,79 +22,101 @@
 shared_users >= 5
 ```
 
-对通过强边条件的商品对，在每个 leaf 内做连通分量；size >= 2 的连通分量形成 graph group，没有强边的合格商品记为 isolated。
+约 62.71M 个原始共评商品对最终筛到 27,457 条同 leaf 强边。这个实验说明已有语义 Market 与用户共评行为大体相容，同时 Market 内存在明显的近邻关系。
 
-该实验从约 62.71M 个共评商品对筛到 27,457 条同 leaf 强边。这个结果用于说明：已有语义 Market 与真实用户共评结构总体相容，同时 Market 内仍可能存在更紧的行为子群。
+完整时期连通分量结果现在只保留作 **audit / 研究复现**，不参与正式历史 Case 的竞品选择。
 
-完整时期图只适合做 **审计 / 研究分析**，不能直接参与历史 Case 的 shelf 选择，因为完整时期图包含 t0 之后的用户行为。
+## 2. 正式生产逻辑
 
-## 2. 两套结果
+### 2.1 Pair 只在 Final Market 内生成
 
-### 2.1 Full-period audit graph
-
-使用完整观测期：
+先把用户对一个商品的重复事件压成：
 
 ```text
-all user-product interactions
-    -> user-product first interaction
-    -> same-leaf product pairs
-    -> shared-user counts
-    -> strong edges
-    -> connected components
+source_partition
+market_id
+user_id
+product_id
+leaf_category
+first_event_date
 ```
 
-用途：
-
-- 对照 Final Market 与行为图的一致性；
-- 统计一个语义 Market 内有几个明显行为子群；
-- 统计 strong-edge / isolated 比例；
-- 复现此前 Electronics 实验。
-
-这套图允许使用完整时期数据，因为它只做 benchmark 构建侧审计，不作为历史 Case 的可见输入。
-
-### 2.2 Pre-t0 cumulative graph
-
-真正给 Case 用的图必须只使用 t0 以前已经发生的行为。
-
-先把用户第一次碰到商品的时间压成：
+然后只在：
 
 ```text
-user_id, product_id, first_event_date
+同一个 Final Market
++同一个 leaf_category
++同一个 user_id
 ```
 
-同一个用户同时碰过 A、B 时，这个用户对 A-B 共评边的贡献生效时间定义为：
+内部生成商品 pair。
+
+因此正式构建不再先对整个 Amazon 大类制造全局共评 pair。
+
+### 2.2 共评关系严格使用 pre-t0
+
+用户第一次碰到 A、B 的日期分别为：
+
+```text
+first_A_date
+first_B_date
+```
+
+这个用户对 A-B 共同用户数的贡献从：
 
 ```text
 pair_event_date = max(first_A_date, first_B_date)
 ```
 
-例如：
+开始生效。
+
+累计后得到：
 
 ```text
-U1: A=2020-01-01, B=2020-06-01
-=> U1 从 2020-06-01 起才算 A-B 的共同用户
-```
-
-把所有用户贡献按日期累计后，可以得到：
-
-```text
+market_id
 product_a
 product_b
 event_date
 shared_users_cumulative
 ```
 
-某个 Case 给定 `t0` 后，只需 ASOF 查询：
+某个历史 Case 只查询：
 
 ```text
-shared_users_pre_t0
+event_date < t0
 ```
 
-不需要为每个 Case 重新扫描全量用户记录。
+所以不会使用 t0 之后的用户行为。
 
-## 3. 默认强边规则
+## 3. 固定 Case 竞品规模：K = 16
 
-默认保留此前实验的保守规则：
+当前 benchmark 第一版已经冻结：
+
+```text
+max_competitors = 16
+```
+
+也就是：
+
+```text
+一个 Case 最多 1 个 focal + 16 个 competitor
+```
+
+选择机制固定为：
+
+```text
+t0 时有效 competitor 数 <= 16
+→ 全部保留
+
+ t0 时有效 competitor 数 > 16
+→ 启动 focal-centered 共评筛选
+```
+
+## 4. 超过 16 个时怎么选
+
+只计算 focal 与每个 competitor 的关系，不需要计算整个 shelf 的连通分量。
+
+强共评 competitor 定义沿用预实验：
 
 ```text
 same leaf_category
@@ -100,145 +125,63 @@ competitor_users_pre_t0 >= 100
 shared_users_pre_t0 >= 5
 ```
 
-`100 / 5` 集中放在 `config.py`，以后如果需要根据全量分布调整，只改版本配置。
-
-Full-period audit 也使用同一套默认阈值，便于和此前实验口径对照。
-
-## 4. 在 Case shelf 里的使用方式
-
-Case shelf 的基本资格仍由商品时间条件决定：
+然后：
 
 ```text
-same Final Market
-product_id != focal
-first_rating_date < t0
-last_rating_date >= t0
+1. 强共评 competitor 优先
+2. 如果强共评 competitor > 16
+   → 按 shared_users_pre_t0 从高到低取前 16
+3. 如果强共评 competitor < 16
+   → 强共评全部保留
+   → 剩余名额按 pre_t0_recent_review_count 从高到低补
+   → 再以 pre_t0_review_count、product_id 做确定性 tie-break
 ```
 
-behavior graph 不负责先删除这些商品，而是给 shelf 增加关系特征：
+例如：
 
 ```text
-shared_users_pre_t0
-focal_users_pre_t0
-competitor_users_pre_t0
-jaccard_pre_t0
-overlap_min_pre_t0
-direct_strong_edge_pre_t0
-same_component_pre_t0
-graph_relation
+原始 competitor = 43
+强共评 competitor = 9
+
+→ 9 个强共评全部留下
+→ 再按近期活跃度补 7 个
+→ 最终 16 个 competitor
 ```
 
-`graph_relation` 解释为：
+## 5. 这三个信号各自负责什么
 
 ```text
-direct_strong_edge
-same_component
-same_market_other
-isolated
+Market
+→ 谁属于同一个竞争范围
+
+t0 时间资格
+→ 当时谁已经存在且仍有观测活动
+
+focal-centered 共评
+→ 竞品太多时谁和 focal 的真实用户更重合
+
+pre_t0_recent_review_count
+→ 共评关系不足以填满 16 个时补谁
 ```
 
-因此当前设计是：
+小 Market / 小 shelf 完全不会被二部图切碎：只要竞品数不超过 16，就全部保留。
+
+## 6. 主要输出
+
+长期累计索引：
 
 ```text
-Market 决定语义竞争边界
-时间资格决定 t0 时谁在场
-Graph 决定谁与 focal 行为上更近
-活跃度决定当时谁更重要
+product_user_cumulative.parquet
+pair_cumulative.parquet
 ```
 
-如果以后因为 shelf 太大需要 Top-K，推荐优先级：
+Case 选择中间表：
 
 ```text
-1. focal 直接 strong-edge 商品
-2. focal 同 graph component 商品
-3. 同 Market 其他商品
+_work/case_focal_coreview_features.parquet
 ```
 
-每层内部再按 `pre_t0_recent_review_count` / `pre_t0_review_count` 等 t0 前特征排序。当前模块只生成关系和分层，不写死最终 Top-K。
-
-## 5. 目录
-
-```text
-behavior_graph/
-├── README.md
-├── TODO.md
-├── __init__.py
-├── config.py
-├── user_product.py
-├── pair_events.py
-├── cumulative.py
-├── components.py
-├── audit.py
-├── case_features.py
-└── pipeline.py
-```
-
-## 6. 主要中间表
-
-### `user_product_first.parquet`
-
-```text
-source_partition
-user_id
-product_id
-leaf_category
-first_event_date
-```
-
-一个用户对一个商品只保留第一次观测时间。
-
-### `product_user_cumulative.parquet`
-
-```text
-source_partition
-product_id
-event_date
-users_cumulative
-```
-
-表示截至某一天一个商品累计有多少不同用户。
-
-### `pair_user_events.parquet`
-
-```text
-source_partition
-leaf_category
-product_a
-product_b
-user_id
-pair_event_date
-```
-
-一行表示一个用户何时开始成为 A、B 的共同用户。
-
-### `pair_cumulative.parquet`
-
-```text
-source_partition
-leaf_category
-product_a
-product_b
-event_date
-shared_users_cumulative
-```
-
-给 Case 做 `pre-t0` ASOF 查询。
-
-### `full_graph_edges.parquet`
-
-完整时期强边，仅用于审计。
-
-### `full_graph_components.parquet`
-
-完整时期连通分量，仅用于审计。
-
-### `graph_market_overlap.parquet`
-
-把 full-period component 映射回 Final Market，统计 component × Market 的商品重叠。
-
-### `case_graph_features.parquet`
-
-给 Case shelf 使用：
+一行一个 Case × competitor，包含：
 
 ```text
 case_candidate_id
@@ -246,22 +189,41 @@ market_id
 focal_product_id
 product_id
 t0
-shared_users_pre_t0
+same_leaf
 focal_users_pre_t0
 competitor_users_pre_t0
-jaccard_pre_t0
-overlap_min_pre_t0
-direct_strong_edge_pre_t0
-same_component_pre_t0
-graph_relation
+shared_users_pre_t0
+strong_coreview_pre_t0
 ```
 
-## 7. 关键原则
+正式截断后的 shelf：
 
-1. Full-period graph 可以看未来，只做审计。
-2. 任何真正影响历史 Case 的 graph feature 必须只使用 `< t0` 数据。
-3. Final Market 仍是一级市场定义，graph component 不改名为 Market。
-4. graph 先作为竞品接近度特征，不直接替代完整 shelf。
-5. 用户对同一商品多次评论只贡献一个 user-product membership，避免重复计数。
-6. pair 只在同 leaf 内生成，避免跨最细 Amazon 类目的共评关系把图连脏。
-7. pair 构造时可以用“完整时期总用户数 < 100 的商品永远不可能成为强边端点”做安全预剪枝；这个剪枝不会给历史 Case 引入未来正信息，只排除永远达不到阈值的商品。
+```text
+case_shelf_selected.parquet
+```
+
+额外记录：
+
+```text
+competitor_pool_size
+competitor_cap                 # 16
+selection_triggered
+selection_rank
+selection_reason               # focal / within_cap / strong_coreview / activity_fill
+```
+
+## 7. Full-period audit
+
+`full_graph_edges.parquet`、`full_graph_components.parquet` 等仍可以保留，用于复现 / 审计此前二部图实验。
+
+它们的作用只限于研究分析，不会决定历史 Case 的 shelf。
+
+## 8. 关键原则
+
+1. Final Market 不因共评图重新分裂。
+2. 正式 pair 只在同一个 Final Market 内生成。
+3. 任何影响 Case 的共评统计都必须严格 `< t0`。
+4. competitor 数 `<=16` 时全部保留。
+5. competitor 数 `>16` 时才启动共评筛选。
+6. 强共评阈值第一版固定为 `100 / 5`。
+7. 用户对同一商品多次评论只贡献一个 user-product membership。
