@@ -19,8 +19,8 @@ market_build
         ├── user_category_history_cumulative.parquet
         ├── user_market_history_cumulative.parquet
         └── behavior_graph/
-              ├── full-period graph audit
-              └── pre-t0 pair cumulative indexes
+              ├── Market 内共评累计索引
+              └── full-period audit graph
 ```
 
 ## 1. Market 商品资产
@@ -81,55 +81,103 @@ user_market_history_cumulative
 
 不同商品数通过“用户第一次碰到该商品的日期”累计，重复评分不会把历史商品数重复增加。
 
-## 5. Behavior Graph：Market 内行为结构
+## 5. Behavior Graph：只服务竞品过多时的筛选
 
-`behavior_graph/` 单独实现用户—商品二部图投影 / 共评图逻辑。
+`behavior_graph/` 负责 Final Market 内的共评关系。
 
-它不重新定义 Final Market，作用是：
-
-```text
-Final Market 定义语义竞争边界
-        +
-真实用户共评关系
-        ↓
-Market 内哪些商品行为上更接近
-```
-
-分两种结果：
-
-### Full-period graph
-
-完整观测期生成 strong edges 和 connected components，用于审计 Final Market 与行为结构的一致性。完整时期结果不能直接参与历史 Case 选择。
-
-### Pre-t0 cumulative graph
-
-把用户对商品 pair 的共同用户贡献按首次同时成立日期累计。Case 给定 `t0` 后，通过 ASOF 得到：
+正式用途固定为：
 
 ```text
-shared_users_pre_t0
-endpoint_users_pre_t0
-direct_strong_edge_pre_t0
-same_component_pre_t0
-graph_relation
+Final Market 定义竞争边界
++t0 决定当时谁在场
++共评关系只在 competitor pool > 16 时帮助 focal 选更近的竞品
 ```
 
-默认沿用此前 Electronics 实验规则：
+不根据 graph component 分裂 Final Market。
+
+### Pair 范围
+
+正式 pair 只在：
 
 ```text
-same leaf category
-两端用户数 >= 100
-shared users >= 5
+同 Final Market
++同 leaf category
 ```
 
-Case shelf 的时间资格仍由 `case_build` 决定，behavior graph 先作为竞品接近度 / 分层特征；以后若大 Market 需要 Top-K，优先考虑：
+内部生成。
+
+### Pre-t0 累计
+
+用户对 A-B pair 的共同用户贡献从：
 
 ```text
-direct strong edge
-> same component
-> same market other
+max(first_A_date, first_B_date)
 ```
 
-详细逻辑、表结构和 TODO 见 [`behavior_graph/README.md`](behavior_graph/README.md) 与 [`behavior_graph/TODO.md`](behavior_graph/TODO.md)。
+开始生效。Case 查询严格使用：
+
+```text
+event_date < t0
+```
+
+主要长期索引：
+
+```text
+product_user_cumulative.parquet
+pair_cumulative.parquet
+```
+
+### 固定竞品上限
+
+```text
+K = 16 competitors
+```
+
+规则：
+
+```text
+competitor 数 <= 16
+→ 全部保留
+
+competitor 数 > 16
+→ focal-centered pre-t0 共评筛选
+```
+
+强共评定义：
+
+```text
+same leaf
+focal_users_pre_t0 >= 100
+competitor_users_pre_t0 >= 100
+shared_users_pre_t0 >= 5
+```
+
+选择顺序：
+
+```text
+强共评优先
+→ shared_users_pre_t0 降序
+→ 不足16时按 pre_t0_recent_review_count 补齐
+→ pre_t0_review_count / product_id tie-break
+```
+
+最终输出：
+
+```text
+case_shelf_selected.parquet
+```
+
+一个 Case 最多：
+
+```text
+1 focal + 16 competitors
+```
+
+### Full-period audit
+
+完整时期 strong edges / connected components 仍保留做研究审计和此前 Electronics 预实验复现，但不参与历史 Case 的正式选择。
+
+详细见 [`behavior_graph/README.md`](behavior_graph/README.md)。
 
 ## 6. 运行
 
@@ -156,7 +204,7 @@ python -m market_build.behavior_graph.cli build \
   --output-dir outputs/market_build/behavior_graph
 ```
 
-给一批已经物化的 Case shelf 加 pre-t0 graph 关系：
+给一批完整 Case shelf 做最终最多16竞品的选择：
 
 ```bash
 python -m market_build.behavior_graph.cli case \
@@ -167,7 +215,13 @@ python -m market_build.behavior_graph.cli case \
   --output-dir outputs/case_build/behavior_graph
 ```
 
-`population_size`、`population_source`、graph threshold 都属于 benchmark 研究配置，代码支持但不在主流程里假装已经最终冻结。
+默认即使用：
+
+```text
+min_endpoint_users = 100
+min_shared_users = 5
+max_competitors = 16
+```
 
 ## 7. 下游接口
 
@@ -187,13 +241,13 @@ case_build/ground_truth
 
 behavior_graph/product_user_cumulative.parquet
 behavior_graph/pair_cumulative.parquet
-+ case_shelf.parquet
++ 完整 case_shelf.parquet
         ↓
 behavior_graph case stage
         ↓
-case_graph_features.parquet
+case_shelf_selected.parquet
         ↓
-Case shelf graph-aware ranking / audit / Quality Gate
+Case Population / GT / Quality / Export
 ```
 
-未冻结事项见 [`TODO.md`](TODO.md)；行为图自己的事项见 [`behavior_graph/TODO.md`](behavior_graph/TODO.md)。
+未冻结事项见 [`TODO.md`](TODO.md)；行为图自己的工程事项见 [`behavior_graph/TODO.md`](behavior_graph/TODO.md)。
