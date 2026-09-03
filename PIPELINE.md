@@ -76,6 +76,76 @@ user_market_history_cumulative.parquet
 
 ---
 
+## 3.5 Behavior Graph
+
+这一层单独放在：
+
+```text
+market_build/behavior_graph/
+```
+
+输入：
+
+```text
+canonical_user_events.parquet
+market_products.parquet
+```
+
+先生成：
+
+```text
+user-product first membership
+product user cumulative
+same-leaf pair user events
+pair shared-user cumulative
+```
+
+再分成两种用途。
+
+### 完整时期审计图
+
+```text
+full_graph_edges.parquet
+full_graph_components.parquet
+graph_market_overlap.parquet
+market_graph_summary.parquet
+```
+
+默认 strong edge：
+
+```text
+same leaf category
+endpoint users >= 100
+shared users >= 5
+```
+
+完整时期图只用于审计 Final Market 与行为结构的一致性，不能直接参与历史 Case 的商品选择。
+
+### 历史 Case 可用累计图
+
+核心长期索引：
+
+```text
+product_user_cumulative.parquet
+pair_cumulative.parquet
+```
+
+其中一个用户对 A-B pair 的贡献从：
+
+```text
+max(first_A_date, first_B_date)
+```
+
+开始生效。Case 查询时统一使用：
+
+```text
+event_date < t0
+```
+
+因此不会把未来共评关系泄露给历史 Case。
+
+---
+
 ## 4. Case Discovery
 
 ```text
@@ -112,6 +182,52 @@ case_shelf.parquet
 ```
 
 Shelf 与全部 candidate cases 分开物化，避免超大 Market 自动产生完整 case×product 网格。
+
+---
+
+## 5.5 Case Graph Relation
+
+Case shelf 物化以后，可以再接 behavior graph：
+
+```text
+case_shelf.parquet
+market_products.parquet
+product_user_cumulative.parquet
+pair_cumulative.parquet
+    ↓
+market_build.behavior_graph case
+```
+
+输出：
+
+```text
+case_graph_features.parquet
+```
+
+一行一个 `Case × shelf product`，主要字段：
+
+```text
+shared_users_pre_t0
+focal_users_pre_t0
+competitor_users_pre_t0
+jaccard_pre_t0
+overlap_min_pre_t0
+direct_strong_edge_pre_t0
+graph_component_id_pre_t0
+graph_relation
+```
+
+`graph_relation`：
+
+```text
+focal
+direct_strong_edge
+same_component
+isolated
+same_market_other
+```
+
+这一层目前只提供竞品接近度 / 分层特征，不自动把完整 shelf 截成固定 Top-K。以后若 shelf 太大，需要截断时再优先采用 graph relation。
 
 ---
 
@@ -188,6 +304,7 @@ case_shelf_with_external.parquet
 ```text
 cases
 case_shelf
+case_graph_features（可选）
 case_users
 GT1 / GT2 / market truth
 review_activity_truth（可选）
@@ -280,12 +397,15 @@ evaluation_summary.json
 ```text
 population_scan ─────────────┐
                              ▼
-market_discovery ───────► market_build
+market_discovery ───────► market_build ─────► behavior graph cumulative
+       │                     │                         │
+       ▼                     │                         │
+case discovery               │                         │
+       ▼                     │                         │
+case shelf ──────────────────┼─────────────────────────┘
        │                     │
        ▼                     │
-case discovery               │
-       ▼                     │
-case shelf                   │
+case graph relation          │
        └──────────┬──────────┘
                   ▼
           case population
@@ -310,6 +430,7 @@ case shelf                   │
 ```text
 market discovery version
 population policy + seed
+behavior graph rule version
 Case eligibility thresholds
 GT outcome policy
 quality rules version
@@ -318,4 +439,4 @@ external signal source/version（如果使用）
 schema version
 ```
 
-其中阈值还没冻结的项目统一见根目录 `TODO.md`。
+其中阈值还没冻结的项目统一见根目录 `TODO.md`，行为图自己的未冻结项见 `market_build/behavior_graph/TODO.md`。
