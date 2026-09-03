@@ -33,13 +33,48 @@ case_build/population/TODO.md
 
 对应：`case_build/TODO.md`。
 
-## 3. GT outcome policy
+## 3. Behavior Graph / 二部图
+
+当前已经把此前 Electronics 共评图实验的核心逻辑单独放到：
+
+```text
+market_build/behavior_graph/
+```
+
+默认延续：
+
+```text
+same leaf category
+endpoint users >= 100
+shared users >= 5
+```
+
+需要在正式 benchmark 前冻结：
+
+- 100 / 5 是否继续作为所有大类统一阈值；
+- leaf category 的最终 canonical 来源；
+- graph 只做 shelf 特征，还是在大 shelf 截断时作为优先级；
+- 若需要 Top-K，最终 K 和层内排序规则；
+- full-period component 与 Final Market 的审计指标如何进入论文 / benchmark 报告。
+
+已经固定的时间原则：
+
+```text
+full-period graph -> audit only
+pre-t0 cumulative graph -> Case relation / shelf logic
+```
+
+任何影响历史 Case 的 graph 统计都必须使用 `< t0` 数据。
+
+对应：`market_build/behavior_graph/TODO.md`。
+
+## 4. GT outcome policy
 
 同一用户在 evaluation window 内命中多个 shelf 商品时，目前代码实现 `first_observed_event`，正式 benchmark 需要确认是否冻结这一规则。
 
 对应：`case_build/ground_truth/TODO.md`。
 
-## 4. Case Quality Gate
+## 5. Case Quality Gate
 
 结构性校验已经固定；研究阈值需要基于完整 Case 分布冻结：
 
@@ -57,7 +92,7 @@ Keepa / BSR screening
 
 对应：`case_build/quality/TODO.md`。
 
-## 5. Benchmark Split
+## 6. Benchmark Split
 
 需要冻结 headline benchmark 的 split regime：
 
@@ -68,7 +103,7 @@ Keepa / BSR screening
 
 对应：`benchmark_split/TODO.md`。
 
-## 6. 发布 / evaluator 隔离
+## 7. 发布 / evaluator 隔离
 
 需要在最终评测系统确定后冻结：
 
@@ -79,7 +114,7 @@ Keepa / BSR screening
 
 对应：`benchmark_export/TODO.md`。
 
-## 7. 外部数据
+## 8. 外部数据
 
 `external_signals/` 已经定义 provider-agnostic 的价格 / BSR 历史接口与 Case 对齐逻辑，尚未实现具体 Keepa API 获取客户端。
 
@@ -93,7 +128,7 @@ Keepa / BSR screening
 
 对应：`external_signals/TODO.md`。
 
-## 8. Evaluation 版本
+## 9. Evaluation 版本
 
 当前 evaluator 已实现确定性用户选择和商品排名第一版指标。正式论文 / benchmark 还需要冻结：
 
@@ -130,6 +165,7 @@ Market
 - Market Discovery 的 cross-path 只做规范化后同名合并，不调用 LLM；
 - `t0` 当前由 focal 首评时间近似；
 - Case population 必须在 future GT 查询前固定；
+- behavior graph 的完整时期结果只做审计，Case 使用严格 pre-t0 累计关系；
 - split 在 accepted cases 之后做，且不读取 GT 数值决定归属；
 - 最终文件由 `benchmark_export/` 按 `SCHEMA.md` 物化；
 - 模拟器输出通过 `evaluation/` 的稳定 prediction schema 与 GT 对齐。
