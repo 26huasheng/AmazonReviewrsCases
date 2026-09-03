@@ -17,7 +17,10 @@ market_build
         ├── user_event_store/
         ├── user_history_cumulative.parquet
         ├── user_category_history_cumulative.parquet
-        └── user_market_history_cumulative.parquet
+        ├── user_market_history_cumulative.parquet
+        └── behavior_graph/
+              ├── full-period graph audit
+              └── pre-t0 pair cumulative indexes
 ```
 
 ## 1. Market 商品资产
@@ -78,7 +81,59 @@ user_market_history_cumulative
 
 不同商品数通过“用户第一次碰到该商品的日期”累计，重复评分不会把历史商品数重复增加。
 
-## 5. 运行
+## 5. Behavior Graph：Market 内行为结构
+
+`behavior_graph/` 单独实现用户—商品二部图投影 / 共评图逻辑。
+
+它不重新定义 Final Market，作用是：
+
+```text
+Final Market 定义语义竞争边界
+        +
+真实用户共评关系
+        ↓
+Market 内哪些商品行为上更接近
+```
+
+分两种结果：
+
+### Full-period graph
+
+完整观测期生成 strong edges 和 connected components，用于审计 Final Market 与行为结构的一致性。完整时期结果不能直接参与历史 Case 选择。
+
+### Pre-t0 cumulative graph
+
+把用户对商品 pair 的共同用户贡献按首次同时成立日期累计。Case 给定 `t0` 后，通过 ASOF 得到：
+
+```text
+shared_users_pre_t0
+endpoint_users_pre_t0
+direct_strong_edge_pre_t0
+same_component_pre_t0
+graph_relation
+```
+
+默认沿用此前 Electronics 实验规则：
+
+```text
+same leaf category
+两端用户数 >= 100
+shared users >= 5
+```
+
+Case shelf 的时间资格仍由 `case_build` 决定，behavior graph 先作为竞品接近度 / 分层特征；以后若大 Market 需要 Top-K，优先考虑：
+
+```text
+direct strong edge
+> same component
+> same market other
+```
+
+详细逻辑、表结构和 TODO 见 [`behavior_graph/README.md`](behavior_graph/README.md) 与 [`behavior_graph/TODO.md`](behavior_graph/TODO.md)。
+
+## 6. 运行
+
+主 Market Build：
 
 ```bash
 python -m market_build.cli \
@@ -92,9 +147,29 @@ python -m market_build.cli \
   --output-dir outputs/market_build
 ```
 
-`population_size` 和 `population_source` 属于 benchmark 研究配置，代码支持但不在仓库里写死最终值。
+Behavior graph 基础索引 / full audit：
 
-## 6. 下游接口
+```bash
+python -m market_build.behavior_graph.cli build \
+  --canonical-user-events outputs/market_build/canonical_user_events.parquet \
+  --market-products outputs/market_build/market_products.parquet \
+  --output-dir outputs/market_build/behavior_graph
+```
+
+给一批已经物化的 Case shelf 加 pre-t0 graph 关系：
+
+```bash
+python -m market_build.behavior_graph.cli case \
+  --case-shelf /path/to/case_shelf.parquet \
+  --market-products outputs/market_build/market_products.parquet \
+  --product-user-cumulative outputs/market_build/behavior_graph/product_user_cumulative.parquet \
+  --pair-cumulative outputs/market_build/behavior_graph/pair_cumulative.parquet \
+  --output-dir outputs/case_build/behavior_graph
+```
+
+`population_size`、`population_source`、graph threshold 都属于 benchmark 研究配置，代码支持但不在主流程里假装已经最终冻结。
+
+## 7. 下游接口
 
 ```text
 market_products.parquet
@@ -109,6 +184,16 @@ case_build/population
 canonical_user_events.parquet
         ↓
 case_build/ground_truth
+
+behavior_graph/product_user_cumulative.parquet
+behavior_graph/pair_cumulative.parquet
++ case_shelf.parquet
+        ↓
+behavior_graph case stage
+        ↓
+case_graph_features.parquet
+        ↓
+Case shelf graph-aware ranking / audit / Quality Gate
 ```
 
-未冻结事项见 [`TODO.md`](TODO.md)。
+未冻结事项见 [`TODO.md`](TODO.md)；行为图自己的事项见 [`behavior_graph/TODO.md`](behavior_graph/TODO.md)。
