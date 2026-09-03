@@ -8,9 +8,9 @@ ground_truth/TODO.md
 quality/TODO.md
 ```
 
-## 1. Shelf 最终规模规则
+## 1. Shelf 规模规则已经冻结
 
-当前所有通过时间资格的商品都进入 shelf：
+基础时间资格：
 
 ```text
 product_id != focal
@@ -18,13 +18,31 @@ first_rating_date < t0
 last_rating_date >= t0
 ```
 
-尚未决定：
+然后执行固定的 competitor cap：
 
-- 是否需要 shelf size 上限；
-- 极大 Market 是否截断；
-- 截断时依据长期评论量、近期活跃度、价格或其它信号。
+```text
+K = 16
+```
 
-v5 的 `Top-150 / 8 CORE + 8 RESERVE` 没有继续写死。
+规则：
+
+```text
+competitor 数 <= 16
+→ 全部保留
+
+competitor 数 > 16
+→ 使用 market_build/behavior_graph 的严格 pre-t0 focal 共评关系筛选
+→ 强共评优先
+→ 不足 16 时按 pre_t0_recent_review_count 补齐
+```
+
+因此最终一个 Case 最多：
+
+```text
+1 focal + 16 competitors
+```
+
+旧的 `Top-150 / 8 CORE + 8 RESERVE` 不再使用。
 
 ## 2. 商品活跃度阈值
 
@@ -36,7 +54,7 @@ pre_t0_recent_review_count
 
 默认最近窗口 `[t0-120天, t0)`。
 
-是否要求最近窗口至少多少条评论，需要看真实 shelf size / 活跃度分布以后冻结。
+当前它主要作为 behavior graph 不足 16 个强共评竞品时的补位排序信号；是否另外把它做成 Case 硬资格阈值，仍需后续决定。
 
 ## 3. 商品“仍在市场”代理
 
@@ -81,6 +99,7 @@ case_candidate_id
 大 Market 正式全量运行时可以继续增加：
 
 - shelf 分批物化；
+- behavior graph Market 分块；
 - checkpoint / resume；
 - DuckDB 临时目录容量统计；
 - Market 级并行。
