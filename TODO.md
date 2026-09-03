@@ -23,48 +23,55 @@ case_build/population/TODO.md
 
 ## 2. Shelf / 商品侧资格
 
-需要真实 Market / Case 分布后冻结：
+竞品规模规则已经冻结：
 
-- shelf 是否需要上限；
-- 极大 Market 的截断规则；
-- 最近活动量是否做硬门槛；
+```text
+K = 16 competitors
+```
+
+即：
+
+```text
+<=16 个竞品：全部保留
+>16 个竞品：使用同 Final Market 内、严格 pre-t0 的 focal 共评关系筛选
+强共评：两端用户>=100，shared_users>=5，同 leaf
+强共评不足16时按 pre_t0_recent_review_count 补齐
+```
+
+Final Market 不因为共评图分裂。完整时期 graph component 只保留作 audit。
+
+仍未冻结的商品侧事项：
+
+- 最近活动量是否另外做 Case 硬门槛；
 - Keepa availability 是否增强首评 / 末评活跃区间代理；
 - `price_at_t0` 的历史价格取值规则。
 
-对应：`case_build/TODO.md`。
+对应：
+
+```text
+case_build/TODO.md
+market_build/behavior_graph/README.md
+```
 
 ## 3. Behavior Graph / 二部图
 
-当前已经把此前 Electronics 共评图实验的核心逻辑单独放到：
+正式用途已经冻结为：
 
 ```text
-market_build/behavior_graph/
+同 Final Market 内构造共评 pair
++ 同 leaf
++ 只用 <t0 行为
++ competitor pool >16 时才用于 focal-centered 截断
 ```
 
-默认延续：
+默认阈值：
 
 ```text
-same leaf category
 endpoint users >= 100
 shared users >= 5
 ```
 
-需要在正式 benchmark 前冻结：
-
-- 100 / 5 是否继续作为所有大类统一阈值；
-- leaf category 的最终 canonical 来源；
-- graph 只做 shelf 特征，还是在大 shelf 截断时作为优先级；
-- 若需要 Top-K，最终 K 和层内排序规则；
-- full-period component 与 Final Market 的审计指标如何进入论文 / benchmark 报告。
-
-已经固定的时间原则：
-
-```text
-full-period graph -> audit only
-pre-t0 cumulative graph -> Case relation / shelf logic
-```
-
-任何影响历史 Case 的 graph 统计都必须使用 `< t0` 数据。
+还可继续优化的主要是工程实现和 leaf canonical 来源，不再讨论 Market 分裂或 component-based Top-K。
 
 对应：`market_build/behavior_graph/TODO.md`。
 
@@ -151,7 +158,7 @@ Market
 └── Cases
     ├── focal
     ├── t0
-    ├── t0 shelf
+    ├── t0 shelf（最多16个competitors）
     ├── selected user ids
     └── GT
         ├── GT1: positive user -> product
@@ -164,8 +171,8 @@ Market
 
 - Market Discovery 的 cross-path 只做规范化后同名合并，不调用 LLM；
 - `t0` 当前由 focal 首评时间近似；
+- competitor pool 超过16时只用 pre-t0 focal 共评关系筛选，不分裂 Final Market；
 - Case population 必须在 future GT 查询前固定；
-- behavior graph 的完整时期结果只做审计，Case 使用严格 pre-t0 累计关系；
 - split 在 accepted cases 之后做，且不读取 GT 数值决定归属；
 - 最终文件由 `benchmark_export/` 按 `SCHEMA.md` 物化；
 - 模拟器输出通过 `evaluation/` 的稳定 prediction schema 与 GT 对齐。
