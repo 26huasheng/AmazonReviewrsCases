@@ -17,7 +17,7 @@ def write_full_graph_edges(
     min_endpoint_users: int,
     min_shared_users: int,
 ) -> None:
-    """完整时期 strong edges，只用于 Market / graph 审计。"""
+    """完整时期 strong edges，只用于 Market 内部图审计。"""
     if min_endpoint_users <= 0 or min_shared_users <= 0:
         raise ValueError("graph thresholds must be positive")
 
@@ -25,6 +25,8 @@ def write_full_graph_edges(
     totals = sql_literal(str(product_user_totals))
     copy_atomic(f"""
         SELECT p.source_partition,
+               p.market_id,
+               p.market_label,
                p.leaf_category,
                p.product_a,
                p.product_b,
@@ -40,13 +42,15 @@ def write_full_graph_edges(
         FROM read_parquet({pairs}) p
         JOIN read_parquet({totals}) a
           ON p.source_partition = a.source_partition
+         AND p.market_id = a.market_id
          AND p.product_a = a.product_id
         JOIN read_parquet({totals}) b
           ON p.source_partition = b.source_partition
+         AND p.market_id = b.market_id
          AND p.product_b = b.product_id
         WHERE a.n_users_full >= {int(min_endpoint_users)}
           AND b.n_users_full >= {int(min_endpoint_users)}
           AND p.shared_users_full >= {int(min_shared_users)}
-        ORDER BY p.source_partition, p.leaf_category,
+        ORDER BY p.source_partition, p.market_id, p.leaf_category,
                  p.product_a, p.product_b
     """, destination)
