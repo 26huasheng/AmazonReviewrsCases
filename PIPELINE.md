@@ -76,73 +76,50 @@ user_market_history_cumulative.parquet
 
 ---
 
-## 3.5 Behavior Graph
+## 3.5 Behavior Graph 累计索引
 
-这一层单独放在：
+目录：
 
 ```text
 market_build/behavior_graph/
 ```
 
-输入：
+正式 pair 只在：
 
 ```text
-canonical_user_events.parquet
-market_products.parquet
+同一个 Final Market
++同一个 leaf category
 ```
 
-先生成：
+内部生成。
+
+用户对 A-B 的共同用户贡献从：
 
 ```text
-user-product first membership
-product user cumulative
-same-leaf pair user events
-pair shared-user cumulative
+max(first_A_date, first_B_date)
 ```
 
-再分成两种用途。
-
-### 完整时期审计图
-
-```text
-full_graph_edges.parquet
-full_graph_components.parquet
-graph_market_overlap.parquet
-market_graph_summary.parquet
-```
-
-默认 strong edge：
-
-```text
-same leaf category
-endpoint users >= 100
-shared users >= 5
-```
-
-完整时期图只用于审计 Final Market 与行为结构的一致性，不能直接参与历史 Case 的商品选择。
-
-### 历史 Case 可用累计图
-
-核心长期索引：
+开始生效，长期累计成：
 
 ```text
 product_user_cumulative.parquet
 pair_cumulative.parquet
 ```
 
-其中一个用户对 A-B pair 的贡献从：
-
-```text
-max(first_A_date, first_B_date)
-```
-
-开始生效。Case 查询时统一使用：
+历史 Case 查询统一使用：
 
 ```text
 event_date < t0
 ```
 
-因此不会把未来共评关系泄露给历史 Case。
+完整时期的：
+
+```text
+full_graph_edges.parquet
+full_graph_components.parquet
+```
+
+只用于 audit / 预实验复现，不参与正式 Case 的 Market 分裂或竞品分组。
 
 ---
 
@@ -169,7 +146,7 @@ case_candidates_evaluable.parquet
 
 ---
 
-## 5. Case Shelf
+## 5. Case Shelf：先生成完整时间资格池
 
 ```text
 明确传入的一批 cases
@@ -181,57 +158,91 @@ case_build shelf
 case_shelf.parquet
 ```
 
-Shelf 与全部 candidate cases 分开物化，避免超大 Market 自动产生完整 case×product 网格。
+基础 competitor 资格：
+
+```text
+同 Final Market
+product_id != focal
+first_rating_date < t0
+last_rating_date >= t0
+```
+
+并计算：
+
+```text
+pre_t0_review_count
+pre_t0_rating_mean
+pre_t0_recent_review_count
+```
+
+这里的 `case_shelf.parquet` 是完整的时间资格竞品池。
 
 ---
 
-## 5.5 Case Graph Relation
+## 5.5 Behavior Graph 竞品截断：固定 K = 16
 
-Case shelf 物化以后，可以再接 behavior graph：
+输入：
 
 ```text
 case_shelf.parquet
 market_products.parquet
 product_user_cumulative.parquet
 pair_cumulative.parquet
-    ↓
-market_build.behavior_graph case
 ```
 
 输出：
 
 ```text
-case_graph_features.parquet
+case_shelf_selected.parquet
 ```
 
-一行一个 `Case × shelf product`，主要字段：
+固定规则：
 
 ```text
-shared_users_pre_t0
-focal_users_pre_t0
-competitor_users_pre_t0
-jaccard_pre_t0
-overlap_min_pre_t0
-direct_strong_edge_pre_t0
-graph_component_id_pre_t0
-graph_relation
+competitor 数 <= 16
+→ 全部保留
+
+competitor 数 > 16
+→ 只比较 focal 与每个 competitor 的 pre-t0 共评关系
 ```
 
-`graph_relation`：
+强共评 competitor：
 
 ```text
-focal
-direct_strong_edge
-same_component
-isolated
-same_market_other
+same leaf
+focal_users_pre_t0 >= 100
+competitor_users_pre_t0 >= 100
+shared_users_pre_t0 >= 5
 ```
 
-这一层目前只提供竞品接近度 / 分层特征，不自动把完整 shelf 截成固定 Top-K。以后若 shelf 太大，需要截断时再优先采用 graph relation。
+排序 / 补位：
+
+```text
+1. 强共评优先
+2. 强共评内部 shared_users_pre_t0 降序
+3. 不足16时按 pre_t0_recent_review_count 补
+4. 再以 pre_t0_review_count / product_id tie-break
+```
+
+因此最终一个 Case 最多：
+
+```text
+1 focal + 16 competitors
+```
+
+这一阶段 **不做 graph component，不分裂 Final Market**。
 
 ---
 
 ## 6. Case Population
+
+下游从这里开始统一使用：
+
+```text
+case_shelf_selected.parquet
+```
+
+然后：
 
 ```text
 cases
@@ -259,7 +270,7 @@ case_users.parquet
 ```text
 cases
 case_users.parquet
-case_shelf.parquet
+case_shelf_selected.parquet
 canonical_user_events.parquet
 rating_daily_summary.parquet（可选）
     ↓
@@ -281,7 +292,7 @@ review_activity_truth.parquet（可选）
 
 ```text
 cases
-case_shelf.parquet
+case_shelf_selected.parquet
 provider-agnostic price / BSR history
     ↓
 external_signals
@@ -303,8 +314,7 @@ case_shelf_with_external.parquet
 
 ```text
 cases
-case_shelf
-case_graph_features（可选）
+最终 case_shelf
 case_users
 GT1 / GT2 / market truth
 review_activity_truth（可选）
@@ -354,7 +364,7 @@ market_products
 market_population
 canonical_user_events
 accepted_cases
-case_shelf
+最终 case_shelf
 case_users
 GT1 / GT2 / market truth
 split_assignments
@@ -398,29 +408,29 @@ evaluation_summary.json
 population_scan ─────────────┐
                              ▼
 market_discovery ───────► market_build ─────► behavior graph cumulative
-       │                     │                         │
-       ▼                     │                         │
-case discovery               │                         │
-       ▼                     │                         │
-case shelf ──────────────────┼─────────────────────────┘
-       │                     │
-       ▼                     │
-case graph relation          │
-       └──────────┬──────────┘
-                  ▼
-          case population
-                  ▼
-            ground truth
-                  │
-       external ──┤
-                  ▼
-             quality
-                  ▼
-               split
-                  ▼
-              export
-                  ▼
-             evaluation
+       │                                               │
+       ▼                                               │
+case discovery                                         │
+       ▼                                               │
+完整 case shelf ───────────────────────────────────────┘
+       ▼
+Top-16 focal-centered selection
+       ▼
+case_shelf_selected
+       ▼
+case population
+       ▼
+ground truth
+       │
+external ─┤
+       ▼
+quality
+       ▼
+split
+       ▼
+export
+       ▼
+evaluation
 ```
 
 # 版本化原则
@@ -430,7 +440,7 @@ case graph relation          │
 ```text
 market discovery version
 population policy + seed
-behavior graph rule version
+behavior graph rule version（100 / 5 / K=16）
 Case eligibility thresholds
 GT outcome policy
 quality rules version
@@ -438,5 +448,3 @@ split strategy + seed
 external signal source/version（如果使用）
 schema version
 ```
-
-其中阈值还没冻结的项目统一见根目录 `TODO.md`，行为图自己的未冻结项见 `market_build/behavior_graph/TODO.md`。
