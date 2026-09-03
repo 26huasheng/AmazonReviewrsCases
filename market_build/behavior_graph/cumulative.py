@@ -44,7 +44,7 @@ def write_pair_cumulative(
     destination: Path,
     copy_atomic,
 ) -> None:
-    """商品对共同用户数随时间的累计表。
+    """Market 内商品对共同用户数随时间的累计表。
 
     `event_date` 当天新增的共同用户在当天结束后进入累计值。历史 Case 查询时统一
     使用 `event_date < t0`，保证 t0 当天行为不会进入 pre-t0 特征。
@@ -53,28 +53,32 @@ def write_pair_cumulative(
     copy_atomic(f"""
         WITH daily AS (
             SELECT source_partition,
+                   market_id,
+                   any_value(market_label) AS market_label,
                    leaf_category,
                    product_a,
                    product_b,
                    pair_event_date AS event_date,
                    count(*)::BIGINT AS new_shared_users
             FROM read_parquet({src})
-            GROUP BY source_partition, leaf_category,
+            GROUP BY source_partition, market_id, leaf_category,
                      product_a, product_b, pair_event_date
         )
         SELECT source_partition,
+               market_id,
+               market_label,
                leaf_category,
                product_a,
                product_b,
                event_date,
                new_shared_users,
                sum(new_shared_users) OVER (
-                   PARTITION BY source_partition, leaf_category,
+                   PARTITION BY source_partition, market_id, leaf_category,
                                 product_a, product_b
                    ORDER BY event_date
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                )::BIGINT AS shared_users_cumulative
         FROM daily
-        ORDER BY source_partition, leaf_category,
+        ORDER BY source_partition, market_id, leaf_category,
                  product_a, product_b, event_date
     """, destination)
